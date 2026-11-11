@@ -449,22 +449,35 @@ pub fn time_table_from_value(tt: &Value) -> TimeTable {
 
 /// Decode a document body. Shared with [`crate::tdts`], whose time tables
 /// have the same shape inside their wrapper.
-pub fn from_value(v: &Value) -> Result<Sheet, Error> {
+/// A sheet with its header filled in and no time tables yet.
+///
+/// `episode` is a TDTS key. Reading it here costs nothing and means the one
+/// decoder serves both formats.
+pub(crate) fn sheet_from_header(v: &Value) -> Sheet {
     let mut sheet = Sheet::default();
     if let Some(h) = v.get("header") {
         sheet.cut = h.get("cut").map(|c| c.to_text()).unwrap_or_default();
         sheet.scene = h.get("scene").map(|c| c.to_text()).unwrap_or_default();
         sheet.episode = h.get("episode").map(|c| c.to_text()).unwrap_or_default();
     }
+    sheet
+}
+
+/// The `operatorName` on a time table, which is where both formats keep it.
+pub(crate) fn operator_of(tt: &Value) -> String {
+    tt.get("operatorName")
+        .map(|o| o.to_text())
+        .unwrap_or_default()
+}
+
+pub fn from_value(v: &Value) -> Result<Sheet, Error> {
+    let mut sheet = sheet_from_header(v);
     let tables = v
         .get("timeTables")
         .and_then(|t| t.as_array())
         .ok_or_else(|| Error::Parse("no timeTables".into()))?;
     if let Some(first) = tables.first() {
-        sheet.operator = first
-            .get("operatorName")
-            .map(|o| o.to_text())
-            .unwrap_or_default();
+        sheet.operator = operator_of(first);
     }
     sheet.tables = tables.iter().map(time_table_from_value).collect();
     Ok(sheet)

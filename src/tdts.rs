@@ -29,6 +29,22 @@
 //! wrapper, so `timeSheets` carrying `version: 5` is a shape no reader
 //! expects. [`from_str`] accepts both.
 //!
+//! # Sheets and revisions
+//!
+//! The `timeTables` inside one `timeSheet` are **revisions of that one
+//! sheet**, not separate sheets: the application shows the latest and keeps
+//! the earlier ones when it saves. Several sheets are several `timeSheets`.
+//!
+//! So [`from_str`] reads one time table from each `timeSheet` — the last,
+//! which is the current one — and [`to_value`] writes one `timeSheet` per
+//! time table. The revisions before the last are dropped on the way in and
+//! cannot be written back, which is this crate's one known loss against a
+//! file with a history in it.
+//!
+//! The only description of this that could be found is a third party's, in
+//! the DiTiS editor's notes on the format, and `tests/data/` has a file with
+//! one sheet and one revision, so it does not settle the question.
+//!
 //! The sheet's `direction` — the written instruction above the columns — and
 //! the time table's own `name` are kept as they were read. Writing a fixed
 //! empty string and a sheet number in their place is how a real sheet loses
@@ -196,18 +212,32 @@ pub fn header(sheet: &Sheet) -> Value {
         .with("workSlip", empty_work_slip())
 }
 
+/// One `timeSheets[]` entry: a sheet, and the one revision of it this crate
+/// has.
+fn time_sheet(sheet: &Sheet, tables: Vec<Value>) -> Value {
+    Value::obj()
+        .with("header", header(sheet))
+        .with("timeTables", Value::Array(tables))
+}
+
 pub fn to_value(sheet: &Sheet) -> Value {
-    let tables: Vec<Value> = sheet
+    // One `timeSheet` per time table, because the `timeTables` inside one of
+    // them are revisions of a single sheet and not sheets of their own.
+    // Putting several tables in one would say they are the same sheet saved
+    // over and over, and an application that shows only the latest would show
+    // one of them and hide the rest.
+    let mut sheets: Vec<Value> = sheet
         .tables
         .iter()
         .enumerate()
-        .map(|(i, t)| time_table(t, sheet, i))
+        .map(|(i, t)| time_sheet(sheet, vec![time_table(t, sheet, i)]))
         .collect();
-    let ts = Value::obj()
-        .with("header", header(sheet))
-        .with("timeTables", Value::Array(tables));
+    // A sheet with nothing in it is still a document with a header.
+    if sheets.is_empty() {
+        sheets.push(time_sheet(sheet, Vec::new()));
+    }
     Value::obj()
-        .with("timeSheets", Value::Array(vec![ts]))
+        .with("timeSheets", Value::Array(sheets))
         .with("version", VERSION)
 }
 
@@ -233,13 +263,31 @@ pub fn from_str(text: &str) -> Result<Sheet, Error> {
         return Err(Error::Parse(format!("expected header line {HEADER:?}")));
     }
     let v = json::parse(body)?;
-    // Version 7 and later wrap the sheets; version 5 has them at the top.
-    match v
-        .get("timeSheets")
-        .and_then(|t| t.as_array())
-        .and_then(|t| t.first())
-    {
-        Some(ts) => xdts::from_value(ts),
-        None => xdts::from_value(&v),
+    // Version 5 has the time tables at the top level, with no wrapper, and is
+    // then the same document XDTS has.
+    let Some(sheets) = v.get("timeSheets").and_then(|t| t.as_array()) else {
+        return xdts::from_value(&v);
+    };
+    let Some(first) = sheets.first() else {
+        return Err(Error::Parse("timeSheets is empty".into()));
+    };
+    // Every sheet in the file is read, one time table each. The header is the
+    // first sheet's: this crate has one header per document, and the sheets of
+    // a file are the sheets of a cut.
+    let mut sheet = xdts::sheet_from_header(first);
+    for ts in sheets {
+        let revisions = ts
+            .get("timeTables")
+            .and_then(|t| t.as_array())
+            .unwrap_or(&[]);
+        // The last revision is the current sheet; the ones before it are what
+        // the application keeps as history, and are not read.
+        if let Some(latest) = revisions.last() {
+            if sheet.operator.is_empty() {
+                sheet.operator = xdts::operator_of(latest);
+            }
+            sheet.tables.push(xdts::time_table_from_value(latest));
+        }
     }
+    Ok(sheet)
 }

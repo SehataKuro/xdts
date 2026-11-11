@@ -529,3 +529,86 @@ fn tdts_does_not_carry_the_marks() {
     assert_eq!(back.tables[0].tracks[0].value_at(0), Some("1"));
     assert!(!back.tables[0].tracks[0].has_options());
 }
+
+/// A sheet of two time tables is two `timeSheets`, not one `timeSheet` with
+/// two revisions in it. An application that shows the latest revision of each
+/// sheet would otherwise show one table and hide the other.
+#[test]
+fn several_tables_are_several_time_sheets() {
+    let mut s = sample();
+    let mut second = s.tables[0].clone();
+    second.name = "cut013".into();
+    s.tables.push(second);
+
+    let text = tdts::to_string(&s, &WriteOptions::default());
+    let body = text.split_once("\r\n").unwrap().1.to_string();
+    let v = json::parse(&body).unwrap();
+    let sheets = v.get("timeSheets").unwrap().as_array().unwrap();
+    assert_eq!(sheets.len(), 2, "the tables did not get a sheet each");
+    for ts in sheets {
+        assert_eq!(
+            ts.get("timeTables").unwrap().as_array().unwrap().len(),
+            1,
+            "a sheet was written with a history it does not have"
+        );
+    }
+
+    let back = tdts::from_str(&text).unwrap();
+    assert_eq!(back.tables.len(), 2);
+    assert_eq!(back.tables[0].name, "cut012");
+    assert_eq!(back.tables[1].name, "cut013");
+    for (mine, theirs) in back.tables.iter().zip(&s.tables) {
+        assert_eq!(mine.tracks, theirs.tracks);
+        assert_eq!(mine.columns, theirs.columns);
+        assert_eq!(mine.duration, theirs.duration);
+        // The dialogue and camerawork columns come back named S1, S2 and 1, 2:
+        // TDTS writes a header for every field whether or not it is used, and
+        // those are the application's own defaults, not something this sheet
+        // lost or gained.
+        assert!(mine.dialogue.is_empty() && mine.camera.is_empty());
+    }
+}
+
+/// The `timeTables` of one `timeSheet` are revisions of that sheet. The last
+/// is the current one, and reading them as separate sheets would turn a
+/// sheet's history into extra columns of work that is not there any more.
+#[test]
+fn the_revisions_of_a_sheet_are_not_sheets() {
+    // A file with one sheet saved twice: an older revision, then the current
+    // one.
+    let old = r#"{"color":0,"direction":"","duration":12,"fields":[{"fieldId":0,
+        "tracks":[{"frames":[{"data":[{"fontColorId":0,"id":0,"values":["9"]}],
+        "frame":0}],"trackNo":0}]}],"name":"older","timeTableHeaders":[{"fieldId":0,
+        "names":["A"]}]}"#;
+    let new = old.replace("\"9\"", "\"1\"").replace("older", "current");
+    let header = r#"{"cut":"7","episode":"3","scene":""}"#;
+    let text = format!(
+        "{}\r\n{{\"timeSheets\":[{{\"header\":{header},\"timeTables\":[{old},{new}]}}],\"version\":7}}\r\n",
+        tdts::HEADER
+    );
+
+    let s = tdts::from_str(&text).unwrap();
+    assert_eq!(s.cut, "7");
+    assert_eq!(s.episode, "3");
+    assert_eq!(s.tables.len(), 1, "a revision was read as a sheet");
+    assert_eq!(s.tables[0].name, "current");
+    assert_eq!(s.tables[0].tracks[0].value_at(0), Some("1"));
+}
+
+/// Several `timeSheets` are several sheets, and all of them are read.
+#[test]
+fn every_time_sheet_in_a_file_is_read() {
+    let two = tdts::to_string(
+        &{
+            let mut s = sample();
+            let mut second = s.tables[0].clone();
+            second.name = "cut013".into();
+            s.tables.push(second);
+            s
+        },
+        &WriteOptions::default(),
+    );
+    let back = tdts::from_str(&two).unwrap();
+    assert_eq!(back.tables.len(), 2, "a sheet in the file was skipped");
+    assert_eq!(back.operator, "nobody");
+}
