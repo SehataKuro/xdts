@@ -52,6 +52,26 @@
 //! All three fields are written: 0 (cells), and 3 (dialogue) and 5
 //! (camerawork) where the sheet has them.
 //!
+//! # Key order and layout
+//!
+//! The keys go in the order the files have them, which is neither
+//! alphabetical nor the order the specification lists the properties in:
+//! `timeTables`, `version`, `header`, and inside a field or a track the
+//! contents before the number that identifies it — `tracks` before
+//! `fieldId`, `trackNo` before `frames`, `names` before `fieldId`. TDTS does
+//! the opposite, alphabetically; see [`crate::tdts`].
+//!
+//! JSON does not care, and this crate does, because a sheet that cannot be
+//! diffed against one an application saved is harder to trust. Two files
+//! agree on this order: another editor's sample, and an XDTS saved out of a
+//! real production sheet.
+//!
+//! The layout they do not agree on. One writes the whole document on a
+//! single line; the other puts every key on its own line with no indent at
+//! all and no space after the colon. So there is no byte for byte to match
+//! here, as there is in TDTS, and [`WriteOptions::pretty`] simply chooses
+//! between this crate's own two layouts.
+//!
 //! # The p1 extension
 //!
 //! One unofficial extension is carried as well, and it is the one with a
@@ -176,17 +196,30 @@ pub(crate) fn frame_entry(
 }
 
 /// The `tracks[]` of one field, numbered from the bottom layer up.
-pub(crate) fn field_tracks<'a>(frames: impl Iterator<Item = Vec<Value>> + 'a) -> Value {
+pub(crate) fn field_tracks<'a>(frames: impl Iterator<Item = Vec<Value>> + 'a, d: Dialect) -> Value {
     Value::Array(
         frames
             .enumerate()
             .map(|(i, frames)| {
-                Value::obj()
-                    .with("frames", Value::Array(frames))
-                    .with("trackNo", i)
+                let frames = Value::Array(frames);
+                if d.id_last {
+                    Value::obj().with("trackNo", i).with("frames", frames)
+                } else {
+                    Value::obj().with("frames", frames).with("trackNo", i)
+                }
             })
             .collect(),
     )
+}
+
+/// One `timeTableHeaders[]` entry, with the column names and the field they
+/// belong to in this format's order.
+pub(crate) fn header_entry(id: u32, names: Value, d: Dialect) -> Value {
+    if d.id_last {
+        Value::obj().with("names", names).with("fieldId", id)
+    } else {
+        Value::obj().with("fieldId", id).with("names", names)
+    }
 }
 
 /// What one format writes that the other does not.
@@ -198,16 +231,28 @@ pub(crate) fn field_tracks<'a>(frames: impl Iterator<Item = Vec<Value>> + 'a) ->
 pub(crate) struct Dialect {
     pub options: bool,
     pub font_colors: bool,
+    /// Where `fieldId` and `trackNo` sit among their siblings.
+    ///
+    /// A saved XDTS puts the contents first and the number after them —
+    /// `tracks` before `fieldId`, `trackNo` before `frames`, `names` before
+    /// `fieldId` — and a saved TDTS does the opposite, with its keys in
+    /// alphabetical order throughout. Two files from two applications say
+    /// so on each side, and JSON does not care, but a sheet that can be
+    /// diffed against one an application saved is the whole point of
+    /// matching either.
+    pub id_last: bool,
 }
 
 pub(crate) const XDTS_DIALECT: Dialect = Dialect {
     options: true,
     font_colors: false,
+    id_last: true,
 };
 
 pub(crate) const TDTS_DIALECT: Dialect = Dialect {
     options: false,
     font_colors: true,
+    id_last: false,
 };
 
 /// The cell field's frame entries, one list per column.
@@ -240,7 +285,8 @@ pub(crate) fn value_frames<'a>(f: &'a Field, d: Dialect) -> impl Iterator<Item =
 }
 
 fn field(id: u32, tracks: Value) -> Value {
-    Value::obj().with("fieldId", id).with("tracks", tracks)
+    // A saved XDTS has the tracks before the field they are in.
+    Value::obj().with("tracks", tracks).with("fieldId", id)
 }
 
 fn names(columns: &[String]) -> Value {
@@ -253,21 +299,18 @@ fn time_table(t: &TimeTable, sheet: &Sheet) -> Value {
     // what it was before this crate could carry the rest.
     let mut fields = vec![field(
         FIELD_CELL,
-        field_tracks(cell_frames(t, XDTS_DIALECT)),
+        field_tracks(cell_frames(t, XDTS_DIALECT), XDTS_DIALECT),
     )];
-    let mut headers = vec![Value::obj()
-        .with("fieldId", FIELD_CELL)
-        .with("names", names(&t.columns))];
+    let mut headers = vec![header_entry(FIELD_CELL, names(&t.columns), XDTS_DIALECT)];
     for (id, f) in [(FIELD_DIALOG, &t.dialogue), (FIELD_CAMERA, &t.camera)] {
         if f.is_empty() {
             continue;
         }
-        fields.push(field(id, field_tracks(value_frames(f, XDTS_DIALECT))));
-        headers.push(
-            Value::obj()
-                .with("fieldId", id)
-                .with("names", names(&f.columns)),
-        );
+        fields.push(field(
+            id,
+            field_tracks(value_frames(f, XDTS_DIALECT), XDTS_DIALECT),
+        ));
+        headers.push(header_entry(id, names(&f.columns), XDTS_DIALECT));
     }
     let mut v = Value::obj()
         // The schema asks for at least one frame.
@@ -277,9 +320,9 @@ fn time_table(t: &TimeTable, sheet: &Sheet) -> Value {
     // Not in the published schema and not written by every application, but
     // an unknown key is accepted and the alternative is dropping a name the
     // caller has in hand. Left out entirely when there is none, so a sheet
-    // with no operator is byte for byte what the schema describes. It sits
-    // here, in its alphabetical place, because that is the order the files
-    // these are read beside put their keys in.
+    // with no operator is byte for byte what the schema describes. No sheet
+    // seen in the wild has it, so its place here is this crate's own choice:
+    // beside `name`, the other thing in a time table that is a name.
     if !sheet.operator.is_empty() {
         v = v.with("operatorName", sheet.operator.as_str());
     }
@@ -314,14 +357,18 @@ pub fn header(sheet: &Sheet) -> Value {
 
 pub fn to_value(sheet: &Sheet) -> Value {
     let tables: Vec<Value> = sheet.tables.iter().map(|t| time_table(t, sheet)).collect();
-    let mut v = Value::obj().with("header", header(sheet));
-    // Alphabetically between `header` and `timeTables`, which is where a
-    // writer that sorts its keys — OpenToonz's does — puts it.
+    // The order a saved sheet has: the sheets, the version, and the header
+    // last of the three. This is not alphabetical and not the order the
+    // specification lists the properties in; it is what the files have.
+    let mut v = Value::obj()
+        .with("timeTables", Value::Array(tables))
+        .with("version", version(sheet));
+    // No file that has one has been seen, so this is where the extension's
+    // own document appends it: after the version it extends.
     if let Some(sub) = subversion(sheet) {
         v = v.with("subversion", sub);
     }
-    v.with("timeTables", Value::Array(tables))
-        .with("version", version(sheet))
+    v.with("header", header(sheet))
 }
 
 pub fn to_string(sheet: &Sheet, opts: &WriteOptions) -> String {

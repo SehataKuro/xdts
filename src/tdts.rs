@@ -192,7 +192,7 @@ fn time_table(t: &TimeTable, sheet: &Sheet, index: usize) -> Value {
     };
     let mut fields = vec![Value::obj().with("fieldId", cell_field).with(
         "tracks",
-        xdts::field_tracks(xdts::cell_frames(t, xdts::TDTS_DIALECT)),
+        xdts::field_tracks(xdts::cell_frames(t, xdts::TDTS_DIALECT), xdts::TDTS_DIALECT),
     )];
     for (id, f) in [(FIELD_DIALOG, &t.dialogue), (FIELD_CAMERA, &t.camera)] {
         if f.is_empty() {
@@ -200,7 +200,10 @@ fn time_table(t: &TimeTable, sheet: &Sheet, index: usize) -> Value {
         }
         fields.push(Value::obj().with("fieldId", id).with(
             "tracks",
-            xdts::field_tracks(xdts::value_frames(f, xdts::TDTS_DIALECT)),
+            xdts::field_tracks(
+                xdts::value_frames(f, xdts::TDTS_DIALECT),
+                xdts::TDTS_DIALECT,
+            ),
         ));
     }
     // Keys in the order a sheet saved by the application has them.

@@ -130,6 +130,38 @@ fn paths_of(text: &str) -> Vec<String> {
     out
 }
 
+/// Every object's key order, by key path, as `(path, keys)` pairs.
+///
+/// JSON does not care about this, and both applications do: a sheet written
+/// with the keys in another order cannot be diffed against one they saved.
+fn key_order(v: &json::Value, path: &str, out: &mut Vec<(String, Vec<String>)>) {
+    match v {
+        json::Value::Object(m) => {
+            out.push((path.to_string(), m.iter().map(|(k, _)| k.clone()).collect()));
+            for (k, child) in m {
+                key_order(child, &format!("{path}/{k}"), out);
+            }
+        }
+        json::Value::Array(a) => {
+            if let Some(first) = a.first() {
+                key_order(first, &format!("{path}[]"), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn order_of(text: &str) -> Vec<(String, Vec<String>)> {
+    let body = text
+        .trim_start_matches('\u{feff}')
+        .split_once('\n')
+        .map(|(_, b)| b)
+        .unwrap_or("");
+    let mut out = Vec::new();
+    key_order(&json::parse(body).expect("not JSON"), "", &mut out);
+    out
+}
+
 #[test]
 fn xdts_round_trip() {
     let s = sample();
@@ -767,4 +799,44 @@ fn a_saved_sheet_is_written_back_byte_for_byte() {
     let sheet = tdts::from_str(&text).expect("the fixture reads");
     let again = tdts::to_string(&sheet, &WriteOptions::default());
     assert_eq!(again, text, "a saved sheet did not survive this crate");
+}
+
+/// The keys of an XDTS file go in the order the files have them, which is
+/// not alphabetical and not the order the specification lists the properties
+/// in: `timeTables`, `version`, `header`, with the contents of a field or a
+/// track before the number that identifies it.
+///
+/// `synthetic_v5.xdts` is another editor's file, and an XDTS saved out of a
+/// real production sheet has exactly the same order, in all four places this
+/// crate used to differ. Two witnesses agreeing against it is what settles
+/// it; this crate had put the keys in alphabetical order, which is TDTS's
+/// habit, not XDTS's.
+#[test]
+fn xdts_keys_are_in_the_order_the_files_have_them() {
+    let mine = order_of(&x::to_string(&sample(), &WriteOptions::default()));
+    let theirs = order_of(&fixture("synthetic_v5.xdts"));
+    for (path, keys) in &theirs {
+        let ours = mine
+            .iter()
+            .find(|(p, _)| p == path)
+            .map(|(_, k)| k.clone())
+            .unwrap_or_default();
+        // `operatorName` is this crate's own and no file has it.
+        let ours: Vec<&String> = ours.iter().filter(|k| *k != "operatorName").collect();
+        let keys: Vec<&String> = keys.iter().collect();
+        assert_eq!(ours, keys, "the keys of {path} are in another order");
+    }
+}
+
+/// TDTS puts its keys the other way round, and that is not a guess either:
+/// the saved sheet this crate is checked against has them alphabetically,
+/// `fieldId` before `tracks` and `frames` before `trackNo`.
+#[test]
+fn tdts_keys_are_in_its_own_order() {
+    let mine = order_of(&tdts::to_string(&sample(), &WriteOptions::default()));
+    let saved = order_of(&fixture("saved_v10.tdts"));
+    for (path, keys) in &saved {
+        let ours = mine.iter().find(|(p, _)| p == path).map(|(_, k)| k);
+        assert_eq!(ours, Some(keys), "the keys of {path} are in another order");
+    }
 }
