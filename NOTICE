@@ -15,9 +15,9 @@ tests/data/synthetic_v7.tdts, tests/data/synthetic_v5.xdts
   Synthetic sample sheets from the vdts-editor project. Their contents are
   invented, not taken from any production timesheet, and so is their shape:
   synthetic_v7.tdts spells one key `showHeaderDummy` where a sheet saved by
-  the application has `showHeadDummy`. They are fixtures for reading, and
-  synthetic_v5.xdts is this crate's XDTS key reference for want of a real
-  one; tests/data/saved_v10.tdts is the TDTS reference.
+  the application has `showHeadDummy`. They are fixtures for reading.
+  Neither is a key-order reference: tests/data/saved_v10.tdts is that for
+  TDTS and tests/data/csp_v5.xdts is that for XDTS.
 
   Copyright (c) 2026 lunafuse
   https://github.com/lunafuse/vdts-editor
@@ -32,3 +32,14 @@ tests/data/saved_v10.tdts
   a sheet the 東映 digital timesheet itself saved, key for key and byte for
   byte; the sheet itself is not here and none of its contents are — the
   columns, the cell numbers and the timing in this file are invented.
+
+---
+
+tests/data/csp_v5.xdts
+
+  Written by this crate, and the reference for what a sheet exported by
+  CLIP STUDIO PAINT EX looks like. Its key order, indent and line endings
+  were checked against such a sheet, byte for byte; the sheet itself was
+  production work and is not here, and none of its contents are — the cut
+  number, the column names, the cell numbers and the timing in this file
+  are invented.

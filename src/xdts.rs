@@ -6,18 +6,25 @@
 //! ```text
 //! exchangeDigitalTimeSheet Save Data
 //! {
+//!   "version": 5,
 //!   "header": { "cut": "1", "scene": "1" },
 //!   "timeTables": [{
-//!     "duration": 72,
-//!     "fields": [{ "fieldId": 0, "tracks": [{
-//!         "frames": [ { "data": [{ "id": 0, "values": ["1"] }], "frame": 0 }, ... ],
-//!         "trackNo": 0 }] }],
 //!     "name": "cut001",
-//!     "timeTableHeaders": [{ "fieldId": 0, "names": ["A", "B"] }]
-//!   }],
-//!   "version": 5
+//!     "duration": 72,
+//!     "timeTableHeaders": [{ "fieldId": 0, "names": ["A", "B"] }],
+//!     "fields": [{ "fieldId": 0, "tracks": [{
+//!         "trackNo": 0,
+//!         "frames": [ { "frame": 0, "data": [{ "id": 0, "values": ["1"] }] }, ... ] }] }]
+//!   }]
 //! }
 //! ```
+//!
+//! The keys are in the order a sheet exported by CLIP STUDIO PAINT EX has
+//! them, which is neither alphabetical nor TDTS's order:
+//! `tests/data/csp_v5.xdts` is that order and `tests/formats.rs` checks this
+//! writer against it byte for byte. JSON key order carries no meaning, so
+//! this is not about being read correctly; it is so a file from here can be
+//! diffed against one from the application that reads it.
 //!
 //! The published schema requires `timeTables` and `version` and makes
 //! `header` optional. Inside, `duration` has a minimum of 1, `fieldId` must
@@ -171,10 +178,11 @@ pub(crate) fn frame_entry(
     values: &[String],
     options: &[String],
     font_color: Option<u32>,
+    d: Dialect,
 ) -> Value {
     let mut data = Value::obj();
-    // TDTS puts the colour before the instruction type; the keys are in
-    // alphabetical order, which is the order the files have them in.
+    // TDTS puts the colour before the instruction type; its keys are in
+    // alphabetical order, which is the order its files have them in.
     if let Some(c) = font_color {
         data = data.with("fontColorId", c);
     }
@@ -186,14 +194,14 @@ pub(crate) fn frame_entry(
         );
     }
     let values: Vec<Value> = values.iter().map(|v| Value::from(v.as_str())).collect();
-    Value::obj()
-        .with(
-            "data",
-            // The schema asks for at least one value, and a frame with
-            // nothing in it has no business being a change point.
-            Value::Array(vec![data.with("values", Value::Array(values))]),
-        )
-        .with("frame", frame)
+    // The schema asks for at least one value, and a frame with nothing in it
+    // has no business being a change point.
+    let data = Value::Array(vec![data.with("values", Value::Array(values))]);
+    if d.number_first {
+        Value::obj().with("frame", frame).with("data", data)
+    } else {
+        Value::obj().with("data", data).with("frame", frame)
+    }
 }
 
 /// The `tracks[]` of one field, numbered from the bottom layer up.
@@ -203,7 +211,7 @@ pub(crate) fn field_tracks<'a>(frames: impl Iterator<Item = Vec<Value>> + 'a, d:
             .enumerate()
             .map(|(i, frames)| {
                 let frames = Value::Array(frames);
-                if d.id_last {
+                if d.number_first {
                     Value::obj().with("trackNo", i).with("frames", frames)
                 } else {
                     Value::obj().with("frames", frames).with("trackNo", i)
@@ -213,14 +221,14 @@ pub(crate) fn field_tracks<'a>(frames: impl Iterator<Item = Vec<Value>> + 'a, d:
     )
 }
 
-/// One `timeTableHeaders[]` entry, with the column names and the field they
-/// belong to in this format's order.
-pub(crate) fn header_entry(id: u32, names: Value, d: Dialect) -> Value {
-    if d.id_last {
-        Value::obj().with("names", names).with("fieldId", id)
-    } else {
-        Value::obj().with("fieldId", id).with("names", names)
-    }
+/// One `timeTableHeaders[]` entry: the field it belongs to, then the column
+/// names.
+///
+/// Both formats lead with `fieldId` here — a saved XDTS because that is the
+/// order it has, a saved TDTS because its keys are alphabetical and
+/// `fieldId` sorts before `names` — so this takes no dialect.
+pub(crate) fn header_entry(id: u32, names: Value) -> Value {
+    Value::obj().with("fieldId", id).with("names", names)
 }
 
 /// What one format writes that the other does not.
@@ -232,28 +240,30 @@ pub(crate) fn header_entry(id: u32, names: Value, d: Dialect) -> Value {
 pub(crate) struct Dialect {
     pub options: bool,
     pub font_colors: bool,
-    /// Where `fieldId` and `trackNo` sit among their siblings.
+    /// Whether the number comes before the contents it numbers.
     ///
-    /// A saved XDTS puts the contents first and the number after them —
-    /// `tracks` before `fieldId`, `trackNo` before `frames`, `names` before
-    /// `fieldId` — and a saved TDTS does the opposite, with its keys in
-    /// alphabetical order throughout. Two files from two applications say
-    /// so on each side, and JSON does not care, but a sheet that can be
-    /// diffed against one an application saved is the whole point of
-    /// matching either.
-    pub id_last: bool,
+    /// A sheet exported by CLIP STUDIO PAINT EX leads with it — `trackNo`
+    /// before `frames`, `frame` before `data` — while a saved TDTS has its
+    /// keys in alphabetical order throughout, which puts both the other way
+    /// round (`frames` before `trackNo`, `data` before `frame`). `fieldId`
+    /// leads in both and so is not decided here: see [`header_entry`].
+    ///
+    /// JSON does not care about any of this. Being able to diff a sheet from
+    /// here against one an application saved is the whole point of matching
+    /// either.
+    pub number_first: bool,
 }
 
 pub(crate) const XDTS_DIALECT: Dialect = Dialect {
     options: true,
     font_colors: false,
-    id_last: true,
+    number_first: true,
 };
 
 pub(crate) const TDTS_DIALECT: Dialect = Dialect {
     options: false,
     font_colors: true,
-    id_last: false,
+    number_first: false,
 };
 
 /// The cell field's frame entries, one list per column.
@@ -267,7 +277,7 @@ pub(crate) fn cell_frames<'a>(
             .map(|(f, c)| {
                 let marks: &[String] = if d.options { &c.options } else { &[] };
                 let color = d.font_colors.then_some(c.font_color);
-                frame_entry(*f, std::slice::from_ref(&c.value), marks, color)
+                frame_entry(*f, std::slice::from_ref(&c.value), marks, color, d)
             })
             .collect()
     })
@@ -279,7 +289,10 @@ pub(crate) fn value_frames<'a>(f: &'a Field, d: Dialect) -> impl Iterator<Item =
     f.tracks.iter().map(move |tr| {
         tr.frames
             .iter()
-            .map(|(fr, i)| frame_entry(*fr, &i.values, &[], d.font_colors.then_some(i.font_color)))
+            .map(|(fr, i)| {
+                let color = d.font_colors.then_some(i.font_color);
+                frame_entry(*fr, &i.values, &[], color, d)
+            })
             .collect()
     })
 }
@@ -335,8 +348,8 @@ pub(crate) const XDTS_KEYS: Keys = Keys {
 };
 
 fn field(id: u32, tracks: Value) -> Value {
-    // A saved XDTS has the tracks before the field they are in.
-    Value::obj().with("tracks", tracks).with("fieldId", id)
+    // A saved XDTS names the field before the tracks in it.
+    Value::obj().with("fieldId", id).with("tracks", tracks)
 }
 
 fn names(columns: &[String]) -> Value {
@@ -351,7 +364,7 @@ fn time_table(t: &TimeTable, sheet: &Sheet) -> Value {
         FIELD_CELL,
         field_tracks(cell_frames(t, XDTS_DIALECT), XDTS_DIALECT),
     )];
-    let mut headers = vec![header_entry(FIELD_CELL, names(&t.columns), XDTS_DIALECT)];
+    let mut headers = vec![header_entry(FIELD_CELL, names(&t.columns))];
     for (id, f) in [(FIELD_DIALOG, &t.dialogue), (FIELD_CAMERA, &t.camera)] {
         if f.is_empty() {
             continue;
@@ -360,23 +373,23 @@ fn time_table(t: &TimeTable, sheet: &Sheet) -> Value {
             id,
             field_tracks(value_frames(f, XDTS_DIALECT), XDTS_DIALECT),
         ));
-        headers.push(header_entry(id, names(&f.columns), XDTS_DIALECT));
+        headers.push(header_entry(id, names(&f.columns)));
     }
     let mut v = Value::obj()
+        .with("name", t.name.as_str())
         // The schema asks for at least one frame.
         .with("duration", t.duration.max(1))
-        .with("fields", Value::Array(fields))
-        .with("name", t.name.as_str());
+        .with("timeTableHeaders", Value::Array(headers))
+        .with("fields", Value::Array(fields));
     // Not in the published schema and not written by every application, but
     // an unknown key is accepted and the alternative is dropping a name the
     // caller has in hand. Left out entirely when there is none, so a sheet
     // with no operator is byte for byte what the schema describes. No sheet
     // seen in the wild has it, so its place here is this crate's own choice:
-    // beside `name`, the other thing in a time table that is a name.
+    // last, where there is no key of the application's own to displace.
     if !sheet.operator.is_empty() {
         v = v.with("operatorName", sheet.operator.as_str());
     }
-    let v = v.with("timeTableHeaders", Value::Array(headers));
     if sheet.read_from == Some(Format::Xdts) {
         with_extra(v, &t.extra)
     } else {
@@ -414,12 +427,10 @@ pub fn header(sheet: &Sheet) -> Value {
 /// needs.
 pub fn to_value(sheet: &Sheet) -> Value {
     let tables: Vec<Value> = sheet.tables.iter().map(|t| time_table(t, sheet)).collect();
-    // The order a saved sheet has: the sheets, the version, and the header
-    // last of the three. This is not alphabetical and not the order the
-    // specification lists the properties in; it is what the files have.
-    let mut v = Value::obj()
-        .with("timeTables", Value::Array(tables))
-        .with("version", version(sheet));
+    // The order a sheet exported by CLIP STUDIO PAINT EX has: the version,
+    // the header, then the sheets. This is not alphabetical and not the order
+    // the specification lists the properties in; it is what the file has.
+    let mut v = Value::obj().with("version", version(sheet));
     // No file that has one has been seen, so this is where the extension's
     // own document appends it: after the version it extends.
     if let Some(sub) = subversion(sheet) {
@@ -429,10 +440,11 @@ pub fn to_value(sheet: &Sheet) -> Value {
     // of their object: there is no order to put them in but the file's own,
     // and XDTS's is not alphabetical.
     if sheet.read_from == Some(Format::Xdts) {
-        v = with_extra(v, &sheet.extra);
-        v.with("header", with_extra(header(sheet), &sheet.header_extra))
+        v = v.with("header", with_extra(header(sheet), &sheet.header_extra));
+        with_extra(v.with("timeTables", Value::Array(tables)), &sheet.extra)
     } else {
         v.with("header", header(sheet))
+            .with("timeTables", Value::Array(tables))
     }
 }
 
