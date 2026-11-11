@@ -292,6 +292,12 @@ pub struct TimeTable {
     pub dialogue: Field,
     /// The camerawork field ([`FIELD_CAMERA`]). Empty unless a file had one.
     pub camera: Field,
+    /// The sheet's written direction — the line of text above the columns,
+    /// such as `◇PAN A→B 全尺`.
+    ///
+    /// Like [`Sheet::episode`], this has a place in TDTS and none in XDTS, so
+    /// it survives one format and not the other.
+    pub direction: String,
 }
 
 /// A whole document: the sheet header and its time tables.

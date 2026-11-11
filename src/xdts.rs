@@ -441,6 +441,9 @@ pub fn time_table_from_value(tt: &Value) -> TimeTable {
         tracks,
         dialogue,
         camera,
+        // A TDTS key, read here because both formats' time tables are decoded
+        // by this one function. XDTS has no `direction` and simply has none.
+        direction: tt.get("direction").map(|d| d.to_text()).unwrap_or_default(),
     }
 }
 

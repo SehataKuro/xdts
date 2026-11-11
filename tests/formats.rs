@@ -263,6 +263,47 @@ fn a_real_sheet_survives_being_rewritten() {
     assert_eq!(once.tables[0].tracks, twice.tables[0].tracks);
     assert_eq!(once.cut, twice.cut);
     assert_eq!(once.episode, twice.episode);
+    // Not just the cells: comparing only those is how the written direction
+    // was lost without a test noticing.
+    assert_eq!(once.tables[0], twice.tables[0]);
+}
+
+/// The written direction above the columns is the sheet's camerawork note,
+/// and a real sheet has one. Writing a fixed empty string in its place is
+/// silent data loss, and only a test that reads the fixture's own text can
+/// say it did not happen.
+#[test]
+fn the_written_direction_is_not_thrown_away() {
+    let s = tdts::from_str(&fixture("real_v7.tdts")).unwrap();
+    assert_eq!(s.tables[0].direction, "◇PAN A→B 全尺");
+
+    let again = tdts::to_string(&s, &WriteOptions::default());
+    assert!(again.contains("◇PAN A→B 全尺"), "the direction was dropped");
+    assert_eq!(
+        tdts::from_str(&again).unwrap().tables[0].direction,
+        s.tables[0].direction
+    );
+}
+
+/// A time table keeps the name it has. The application's own sheet1, sheet2,
+/// … is what a table with no name of its own gets, not what one with a name
+/// is renamed to.
+#[test]
+fn a_time_table_keeps_its_name() {
+    let s = sample();
+    assert_eq!(s.tables[0].name, "cut012");
+    let back = tdts::from_str(&tdts::to_string(&s, &WriteOptions::default())).unwrap();
+    assert_eq!(back.tables[0].name, "cut012");
+
+    // The real sheet's name is the application's own numbering, and it comes
+    // back as it was too.
+    let real = tdts::from_str(&fixture("real_v7.tdts")).unwrap();
+    assert_eq!(real.tables[0].name, "sheet1");
+
+    let mut unnamed = sample();
+    unnamed.tables[0].name.clear();
+    let text = tdts::to_string(&unnamed, &WriteOptions::default());
+    assert!(text.contains("\"name\": \"sheet1\""), "no default name");
 }
 
 #[test]

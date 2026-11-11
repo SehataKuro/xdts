@@ -28,6 +28,11 @@
 //! wrapper, so `timeSheets` carrying `version: 5` is a shape no reader
 //! expects. [`from_str`] accepts both.
 //!
+//! The sheet's `direction` — the written instruction above the columns — and
+//! the time table's own `name` are kept as they were read. Writing a fixed
+//! empty string and a sheet number in their place is how a real sheet loses
+//! its camerawork note by passing through a converter.
+//!
 //! Cell data goes in field 0, exactly as in XDTS, and the dialogue and
 //! camerawork fields are written where the sheet has them. A converter whose
 //! TDTS column ids this crate was checked against calls field 0 ACTION and
@@ -157,10 +162,20 @@ fn time_table(t: &TimeTable, sheet: &Sheet, index: usize) -> Value {
                 .with("tracks", Value::Array(Vec::new()))]),
         )
         .with("color", 0u32)
-        .with("direction", "")
+        .with("direction", t.direction.as_str())
         .with("duration", t.duration.max(1))
         .with("fields", Value::Array(fields))
-        .with("name", format!("sheet{}", index + 1))
+        // The application names its sheets sheet1, sheet2, …, which is what a
+        // table with no name of its own gets. A name the caller has is not
+        // overwritten with a number.
+        .with(
+            "name",
+            if t.name.is_empty() {
+                format!("sheet{}", index + 1)
+            } else {
+                t.name.clone()
+            },
+        )
         .with("operatorName", sheet.operator.as_str())
         .with("timeTableHeaders", headers(t))
 }
