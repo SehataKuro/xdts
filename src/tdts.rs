@@ -35,11 +35,10 @@
 //! sheet**, not separate sheets: the application shows the latest and keeps
 //! the earlier ones when it saves. Several sheets are several `timeSheets`.
 //!
-//! So [`from_str`] reads one time table from each `timeSheet` — the last,
-//! which is the current one — and [`to_value`] writes one `timeSheet` per
-//! time table. The revisions before the last are dropped on the way in and
-//! cannot be written back, which is this crate's one known loss against a
-//! file with a history in it.
+//! So [`from_str`] reads the last time table of each `timeSheet` as the sheet
+//! and the ones before it into [`TimeTable::revisions`], and [`to_value`]
+//! writes one `timeSheet` per time table with its history back in front of
+//! it. A file with a history keeps it.
 //!
 //! The only description of this that could be found is a third party's, in
 //! the DiTiS editor's notes on the format, and `tests/data/` has a file with
@@ -54,8 +53,12 @@
 //! camerawork fields are written where the sheet has them. A converter whose
 //! TDTS column ids this crate was checked against calls field 0 ACTION and
 //! field 4 CELL, and says the application shows field 4 in preference to
-//! field 0 where both have data; the sheet in `tests/data/` has its cells in
-//! field 0 and nothing in field 4, which is what this crate writes.
+//! field 0 where both have data. So a sheet is read from field 4 when that
+//! column has anything in it and from field 0 otherwise, and is written back
+//! to the column it came from; a new sheet goes in field 0, which is where
+//! the sheet in `tests/data/` has its cells. None of this is official, and
+//! `tests/data/` has nothing in field 4, so the tests for it are built by
+//! hand.
 //!
 //! The p1 extension's `options` and `subversion` are XDTS's, and nothing says
 //! the application behind TDTS knows those keys, so a cell's marks are left
@@ -68,7 +71,9 @@
 
 use crate::json::{self, Value};
 use crate::xdts;
-use crate::{Error, Sheet, TimeTable, WriteOptions, FIELD_CAMERA, FIELD_CELL, FIELD_DIALOG};
+use crate::{
+    Error, Sheet, TimeTable, WriteOptions, FIELD_CAMERA, FIELD_CELL, FIELD_CELL_ALT, FIELD_DIALOG,
+};
 
 pub const HEADER: &str = "toeiDigitalTimeSheet Save Data";
 
@@ -131,10 +136,18 @@ fn names_or(columns: &[String], default: &[&str]) -> Value {
 /// Headers for fields 0..=5. Fields 1, 2 and 4 are the application's
 /// defaults: this crate has no model for them.
 fn headers(t: &TimeTable) -> Value {
+    // The cell names belong to whichever of the two cell columns this sheet
+    // keeps its cells in; the other one gets the empty header it has in a
+    // sheet that does not use it.
+    let cells = |id: u32| {
+        if t.cell_field == id {
+            names_or(&t.columns, &[])
+        } else {
+            Value::Array(Vec::new())
+        }
+    };
     Value::Array(vec![
-        Value::obj()
-            .with("fieldId", 0u32)
-            .with("names", names_or(&t.columns, &[])),
+        Value::obj().with("fieldId", 0u32).with("names", cells(0)),
         Value::obj()
             .with("fieldId", 1u32)
             .with("names", strings(&[""])),
@@ -144,22 +157,24 @@ fn headers(t: &TimeTable) -> Value {
         Value::obj()
             .with("fieldId", 3u32)
             .with("names", names_or(&t.dialogue.columns, &["S1", "S2"])),
-        Value::obj()
-            .with("fieldId", 4u32)
-            .with("names", Value::Array(Vec::new())),
+        Value::obj().with("fieldId", 4u32).with("names", cells(4)),
         Value::obj()
             .with("fieldId", 5u32)
             .with("names", names_or(&t.camera.columns, &["1", "2"])),
     ])
 }
 
-/// Unlike XDTS, `data` carries a `fontColorId` before the instruction type.
-const FONT_COLOR: Option<(&str, u32)> = Some(("fontColorId", 0));
-
 fn time_table(t: &TimeTable, sheet: &Sheet, index: usize) -> Value {
-    let mut fields = vec![Value::obj().with("fieldId", FIELD_CELL).with(
+    // Back into the column the cells came from: a sheet read out of field 4
+    // is a sheet whose cells the application looks for in field 4.
+    let cell_field = if t.cell_field == FIELD_CELL_ALT {
+        FIELD_CELL_ALT
+    } else {
+        FIELD_CELL
+    };
+    let mut fields = vec![Value::obj().with("fieldId", cell_field).with(
         "tracks",
-        xdts::field_tracks(xdts::cell_frames(t, false, FONT_COLOR)),
+        xdts::field_tracks(xdts::cell_frames(t, xdts::TDTS_DIALECT)),
     )];
     for (id, f) in [(FIELD_DIALOG, &t.dialogue), (FIELD_CAMERA, &t.camera)] {
         if f.is_empty() {
@@ -167,7 +182,7 @@ fn time_table(t: &TimeTable, sheet: &Sheet, index: usize) -> Value {
         }
         fields.push(Value::obj().with("fieldId", id).with(
             "tracks",
-            xdts::field_tracks(xdts::value_frames(f, FONT_COLOR)),
+            xdts::field_tracks(xdts::value_frames(f, xdts::TDTS_DIALECT)),
         ));
     }
     // Keys in the order a sheet saved by the application has them.
@@ -178,7 +193,7 @@ fn time_table(t: &TimeTable, sheet: &Sheet, index: usize) -> Value {
                 .with("fieldId", 0u32)
                 .with("tracks", Value::Array(Vec::new()))]),
         )
-        .with("color", 0u32)
+        .with("color", t.color)
         .with("direction", t.direction.as_str())
         .with("duration", t.duration.max(1))
         .with("fields", Value::Array(fields))
@@ -230,7 +245,17 @@ pub fn to_value(sheet: &Sheet) -> Value {
         .tables
         .iter()
         .enumerate()
-        .map(|(i, t)| time_sheet(sheet, vec![time_table(t, sheet, i)]))
+        .map(|(i, t)| {
+            // The history first, the current sheet last, which is the order
+            // the application saves them in and reads them back by.
+            let mut tables: Vec<Value> = t
+                .revisions
+                .iter()
+                .map(|r| time_table(r, sheet, i))
+                .collect();
+            tables.push(time_table(t, sheet, i));
+            time_sheet(sheet, tables)
+        })
         .collect();
     // A sheet with nothing in it is still a document with a header.
     if sheets.is_empty() {
@@ -280,13 +305,16 @@ pub fn from_str(text: &str) -> Result<Sheet, Error> {
             .get("timeTables")
             .and_then(|t| t.as_array())
             .unwrap_or(&[]);
-        // The last revision is the current sheet; the ones before it are what
-        // the application keeps as history, and are not read.
-        if let Some(latest) = revisions.last() {
+        // The last revision is the current sheet; the ones before it are the
+        // history the application keeps, and are kept here too so that saving
+        // the file again does not throw them away.
+        if let Some((latest, earlier)) = revisions.split_last() {
             if sheet.operator.is_empty() {
                 sheet.operator = xdts::operator_of(latest);
             }
-            sheet.tables.push(xdts::time_table_from_value(latest));
+            let mut table = xdts::time_table_from_value(latest);
+            table.revisions = earlier.iter().map(xdts::time_table_from_value).collect();
+            sheet.tables.push(table);
         }
     }
     Ok(sheet)

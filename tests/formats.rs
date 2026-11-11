@@ -9,7 +9,7 @@
 
 use xdts::{
     json, tdts, xdts as x, Cell, Field, Sheet, TimeTable, Track, ValueTrack, WriteOptions,
-    OPTION_KEYFRAME, OPTION_REFERENCEFRAME,
+    FIELD_CELL_ALT, OPTION_KEYFRAME, OPTION_REFERENCEFRAME,
 };
 
 fn sample() -> Sheet {
@@ -638,4 +638,103 @@ fn a_cut_number_is_not_rewritten() {
     }
     // And the reduction is still available to whoever wants it.
     assert_eq!(x::header_number("C-112"), "112");
+}
+
+/// A sheet's history is kept beside it and written back. The application
+/// saves the earlier revisions when it saves the file, and a converter that
+/// reads only the current one quietly deletes the rest.
+#[test]
+fn the_history_of_a_sheet_is_written_back() {
+    let mut s = sample();
+    let mut older = s.tables[0].clone();
+    older.name = "older".into();
+    older.tracks[0].frames[0].1 = "9".into();
+    s.tables[0].revisions = vec![older.clone()];
+
+    let text = tdts::to_string(&s, &WriteOptions::default());
+    let body = text
+        .split_once(
+            "
+",
+        )
+        .unwrap()
+        .1
+        .to_string();
+    let v = json::parse(&body).unwrap();
+    let tables = v.get("timeSheets").unwrap().as_array().unwrap()[0]
+        .get("timeTables")
+        .unwrap()
+        .as_array()
+        .unwrap();
+    assert_eq!(tables.len(), 2, "the history was not written");
+    // Oldest first, current last.
+    assert_eq!(tables[0].get("name").unwrap().to_text(), "older");
+    assert_eq!(tables[1].get("name").unwrap().to_text(), "cut012");
+
+    let back = tdts::from_str(&text).unwrap();
+    assert_eq!(back.tables.len(), 1, "a revision became a sheet");
+    assert_eq!(back.tables[0].name, "cut012");
+    assert_eq!(back.tables[0].revisions.len(), 1);
+    assert_eq!(back.tables[0].revisions[0].name, "older");
+    assert_eq!(back.tables[0].revisions[0].tracks[0].value_at(0), Some("9"));
+    // A revision has no history of its own.
+    assert!(back.tables[0].revisions[0].revisions.is_empty());
+}
+
+/// TDTS has two cell columns. Where the other one has the cells, that is
+/// where they are read from, and that is where they go back.
+#[test]
+fn cells_in_the_other_column_are_found() {
+    let sheet = format!(
+        "{}
+{{\"timeSheets\":[{{\"header\":{{\"cut\":\"1\",\"episode\":\"\",\"scene\":\"\"}},\"timeTables\":[{{\"color\":0,\"direction\":\"\",\"duration\":4,\"fields\":[{{\"fieldId\":0,\"tracks\":[]}},{{\"fieldId\":4,\"tracks\":[{{\"frames\":[{{\"data\":[{{\"fontColorId\":1,\"id\":0,\"values\":[\"7\"]}}],\"frame\":0}}],\"trackNo\":0}}]}}],\"name\":\"sheet1\",\"timeTableHeaders\":[{{\"fieldId\":0,\"names\":[]}},{{\"fieldId\":4,\"names\":[\"A\"]}}]}}]}}],\"version\":7}}
+",
+        tdts::HEADER
+    );
+
+    let s = tdts::from_str(&sheet).unwrap();
+    let t = &s.tables[0];
+    assert_eq!(t.cell_field, FIELD_CELL_ALT, "the other column was ignored");
+    assert_eq!(t.tracks[0].value_at(0), Some("7"));
+    assert_eq!(
+        t.columns,
+        ["A"],
+        "the column name came from the wrong field"
+    );
+
+    // And back into field 4, with field 0 left as the empty column it is.
+    let again = tdts::to_string(&s, &WriteOptions::default());
+    let back = tdts::from_str(&again).unwrap();
+    assert_eq!(back.tables[0].cell_field, FIELD_CELL_ALT);
+    assert_eq!(back.tables[0].tracks, t.tracks);
+    assert_eq!(back.tables[0].columns, t.columns);
+
+    // A sheet of this crate's own making uses field 0, as the real one does.
+    let mine = tdts::to_string(&sample(), &WriteOptions::default());
+    assert_eq!(tdts::from_str(&mine).unwrap().tables[0].cell_field, 0);
+}
+
+/// The colour a cell is written in, and the sheet's own colour, are the
+/// application's and are given back to it.
+#[test]
+fn the_colours_survive() {
+    let mut s = sample();
+    s.tables[0].color = 2;
+    s.tables[0].tracks[0].frames[0].1 = Cell {
+        value: "1".into(),
+        options: Vec::new(),
+        font_color: 3,
+    };
+
+    let back = tdts::from_str(&tdts::to_string(&s, &WriteOptions::default())).unwrap();
+    assert_eq!(back.tables[0].color, 2);
+    assert_eq!(back.tables[0].tracks[0].at(0).unwrap().font_color, 3);
+    // A cell with no colour of its own is the first colour, which is black.
+    assert_eq!(back.tables[0].tracks[0].at(2).unwrap().font_color, 0);
+
+    // XDTS has no colours and does not pretend to: the cell survives, the
+    // colour does not.
+    let x_back = x::from_str(&x::to_string(&s, &WriteOptions::default())).unwrap();
+    assert_eq!(x_back.tables[0].tracks[0].value_at(0), Some("1"));
+    assert_eq!(x_back.tables[0].tracks[0].at(0).unwrap().font_color, 0);
 }

@@ -91,6 +91,14 @@ pub const FIELD_CELL: u32 = 0;
 pub const FIELD_DIALOG: u32 = 3;
 /// Camerawork: a direction, and from version 10 a camera position.
 pub const FIELD_CAMERA: u32 = 5;
+/// TDTS's other cell column.
+///
+/// A converter whose column ids this crate was checked against calls field 0
+/// ACTION and this one CELL, and says the application shows this one where it
+/// has data and field 0 otherwise. None of that is official, and XDTS has no
+/// such field at all — its `fieldId` is 0, 3 or 5 — so this is read and
+/// written only in TDTS. See [`TimeTable::cell_field`].
+pub const FIELD_CELL_ALT: u32 = 4;
 
 /// 原画 — this drawing is a key, and its number is circled.
 ///
@@ -131,6 +139,10 @@ impl std::error::Error for Error {}
 pub struct Cell {
     pub value: String,
     pub options: Vec<String>,
+    /// The index into the sheet's own text colours that this cell is written
+    /// in. A TDTS key (`fontColorId`), 0 for the first colour, which is
+    /// black; XDTS has no colours and ignores it.
+    pub font_color: u32,
 }
 
 impl Cell {
@@ -144,6 +156,7 @@ impl Cell {
         Self {
             value: value.to_string(),
             options: options.into_iter().map(Into::into).collect(),
+            font_color: 0,
         }
     }
 
@@ -155,10 +168,7 @@ impl Cell {
 
 impl From<&str> for Cell {
     fn from(value: &str) -> Self {
-        Self {
-            value: value.to_string(),
-            options: Vec::new(),
-        }
+        Self::from(value.to_string())
     }
 }
 
@@ -167,6 +177,7 @@ impl From<String> for Cell {
         Self {
             value,
             options: Vec::new(),
+            font_color: 0,
         }
     }
 }
@@ -292,6 +303,25 @@ pub struct TimeTable {
     pub dialogue: Field,
     /// The camerawork field ([`FIELD_CAMERA`]). Empty unless a file had one.
     pub camera: Field,
+    /// Which column the cells are in: [`FIELD_CELL`], or [`FIELD_CELL_ALT`]
+    /// for a TDTS sheet that keeps them in its other one.
+    ///
+    /// A file is written back to the column it was read from. The XDTS writer
+    /// ignores this, because field 4 is not a field that format has.
+    pub cell_field: u32,
+    /// The earlier revisions of this sheet, oldest first.
+    ///
+    /// TDTS keeps the history of a sheet beside it: the `timeTables` of one
+    /// `timeSheet` are the same sheet saved over and over, and the last is
+    /// the current one. This table is that current one, and these are the
+    /// ones before it. A revision's own `revisions` is empty.
+    ///
+    /// XDTS has nowhere for them, so they survive one format and not the
+    /// other.
+    pub revisions: Vec<TimeTable>,
+    /// The colour the sheet is shown in, as an index into the application's
+    /// own list. A TDTS key, and 0 — black — in every sheet seen so far.
+    pub color: u32,
     /// The sheet's written direction — the line of text above the columns,
     /// such as `◇PAN A→B 全尺`.
     ///

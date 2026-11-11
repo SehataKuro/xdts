@@ -46,11 +46,14 @@ let back = xdts::from_str(&std::fs::read_to_string("cut012.tdts")?)?;
 
 ```rust
 pub struct Sheet      { cut, scene, episode, operator: String, tables: Vec<TimeTable> }
-pub struct TimeTable  { name, duration, columns, tracks,        // セル欄（欄0）
+pub struct TimeTable  { name, duration, columns, tracks,        // セル欄
+                        cell_field: u32,                        // セル欄の欄ID（0 か 4）
                         dialogue: Field, camera: Field,         // 台詞欄（3）、カメラワーク欄（5）
-                        direction: String }                     // 欄の上に書かれる指示
+                        revisions: Vec<TimeTable>,              // 過去のリビジョン（古い順）
+                        color: u32, direction: String }         // シートの色、欄の上の指示
 pub struct Track      { frames: Vec<(usize, Cell)> }             // (コマ番号, セル)
-pub struct Cell       { value: String, options: Vec<String> }    // 値＋p1のマーク
+pub struct Cell       { value: String, options: Vec<String>,     // 値＋p1のマーク
+                        font_color: u32 }                        // セルの文字色
 pub struct Field      { columns: Vec<String>, tracks: Vec<ValueTrack> }
 pub struct ValueTrack { frames: Vec<(usize, Vec<String>)> }      // (コマ番号, 値の並び)
 ```
@@ -126,13 +129,15 @@ TDTS の version 5 は古い形式で、`timeTables` が直下にあり包みが
 
 1つの `timeSheet` の中にある `timeTables` は、**そのシートのリビジョン（履歴）**であって別々のシートではありません。アプリケーションは最新のものを表示し、保存時に過去のものを保持します。シートが複数あるときは `timeSheets` が複数になります。
 
-そこで読み込みは各 `timeSheet` から最後の（＝現在の）タイムテーブルを1つ取り、書き出しはタイムテーブル1つにつき `timeSheet` を1つ作ります。**最後より前のリビジョンは読み込み時に落ち、書き戻せません**——これがこのクレートの既知の損失です。
+そこで読み込みは各 `timeSheet` の最後の（＝現在の）タイムテーブルをシートとし、**それより前のものを `TimeTable::revisions` に保ちます**。書き出しはタイムテーブル1つにつき `timeSheet` を1つ作り、履歴をその前に戻します。履歴を持つファイルは履歴を保ったまま往復します。
 
 この挙動の根拠は第三者の記述（DiTiS エディタの FORMATS.md）だけで、`tests/data/` の実物は1シート1リビジョンなので裏付けにはなりません。ここを間違えると、シートの履歴が「もう存在しない作業の列」としてシートの横に並ぶことになります。
 
 `episode` と `direction`（`◇PAN A→B 全尺` のような、欄の上に書かれる指示）は TDTS に置き場所があり XDTS にはないので、**XDTS で往復させると落ちます**。TDTS では読んだものをそのまま書き戻します。`name` も同じで、呼び出し側が持っている名前を連番で上書きしません（名前が空のときだけ、アプリケーション自身の `sheet1`, `sheet2`, … を書きます）。`operator` は XDTS では `operatorName` に書きますが、これは公開スキーマに無いキーです（未知のキーは受け付けられます。空なら書きません）。
 
-セル欄はどちらも `fieldId` 0 です。ただし TDTS の欄 ID については、ある変換実装が欄0を ACTION、欄4を CELL と呼び、両方に値があるとアプリケーションは欄4を優先して表示する、としています。`tests/data/` の実物はセルが欄0に入っていて欄4は空なので、このクレートもそう書きます。欄4に値が入った TDTS を読むとセルは空になります。
+セル欄は、新しく作るシートではどちらも `fieldId` 0 です。ただし TDTS には**セル欄が2つ**あります。ある変換実装が欄0を ACTION、欄4を CELL と呼び、両方に値があるとアプリケーションは欄4を優先して表示する、としています。そこで**欄4に何か入っていればそちらから読み**、`cell_field` に覚えて**読んだ欄に書き戻します**。`tests/data/` の実物は欄0にセルがあり欄4は空なので、この挙動は手で組んだファイルでテストしています（公式の根拠はありません）。
+
+TDTS が持っていて XDTS が持たないもの——`episode`、`direction`、`color`、セルの文字色（`fontColorId`）、そしてリビジョン履歴——は、TDTS で読んで TDTS で書くかぎり保たれます。XDTS を経由すると落ちます。
 
 公開仕様に FPS の属性はありません。
 

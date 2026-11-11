@@ -69,7 +69,7 @@
 use crate::json::{self, Value};
 use crate::{
     Cell, Error, Field, Sheet, TimeTable, Track, ValueTrack, WriteOptions, FIELD_CAMERA,
-    FIELD_CELL, FIELD_DIALOG,
+    FIELD_CELL, FIELD_CELL_ALT, FIELD_DIALOG,
 };
 
 pub const HEADER: &str = "exchangeDigitalTimeSheet Save Data";
@@ -149,13 +149,13 @@ pub(crate) fn frame_entry(
     frame: usize,
     values: &[String],
     options: &[String],
-    extra: Option<(&str, u32)>,
+    font_color: Option<u32>,
 ) -> Value {
     let mut data = Value::obj();
-    // TDTS puts a colour before the instruction type; the keys are in
+    // TDTS puts the colour before the instruction type; the keys are in
     // alphabetical order, which is the order the files have them in.
-    if let Some((key, v)) = extra {
-        data = data.with(key, v);
+    if let Some(c) = font_color {
+        data = data.with("fontColorId", c);
     }
     data = data.with("id", 0u32);
     if !options.is_empty() {
@@ -189,36 +189,52 @@ pub(crate) fn field_tracks<'a>(frames: impl Iterator<Item = Vec<Value>> + 'a) ->
     )
 }
 
-/// The cell field's frame entries, one list per column.
+/// What one format writes that the other does not.
 ///
-/// `options` says whether a cell's marks may be written: they are the p1
-/// extension of XDTS, and nothing says the application behind TDTS knows the
-/// key, so that writer leaves them out.
+/// The marks are XDTS's p1 extension and nothing says the application behind
+/// TDTS knows the key; the colours are TDTS's and are not in the XDTS schema.
+/// Each writer states which it has rather than passing a bare flag around.
+#[derive(Clone, Copy)]
+pub(crate) struct Dialect {
+    pub options: bool,
+    pub font_colors: bool,
+}
+
+pub(crate) const XDTS_DIALECT: Dialect = Dialect {
+    options: true,
+    font_colors: false,
+};
+
+pub(crate) const TDTS_DIALECT: Dialect = Dialect {
+    options: false,
+    font_colors: true,
+};
+
+/// The cell field's frame entries, one list per column.
 pub(crate) fn cell_frames<'a>(
     t: &'a TimeTable,
-    options: bool,
-    extra: Option<(&'a str, u32)>,
+    d: Dialect,
 ) -> impl Iterator<Item = Vec<Value>> + 'a {
     t.tracks.iter().map(move |tr| {
         tr.frames
             .iter()
             .map(|(f, c)| {
-                let marks: &[String] = if options { &c.options } else { &[] };
-                frame_entry(*f, std::slice::from_ref(&c.value), marks, extra)
+                let marks: &[String] = if d.options { &c.options } else { &[] };
+                let color = d.font_colors.then_some(c.font_color);
+                frame_entry(*f, std::slice::from_ref(&c.value), marks, color)
             })
             .collect()
     })
 }
 
 /// A dialogue or camerawork field's frame entries, one list per column.
-pub(crate) fn value_frames<'a>(
-    f: &'a Field,
-    extra: Option<(&'a str, u32)>,
-) -> impl Iterator<Item = Vec<Value>> + 'a {
+pub(crate) fn value_frames<'a>(f: &'a Field, d: Dialect) -> impl Iterator<Item = Vec<Value>> + 'a {
+    // A line or a camera move has no marks and no colour of its own.
+    let color = d.font_colors.then_some(0);
     f.tracks.iter().map(move |tr| {
         tr.frames
             .iter()
-            .map(|(fr, v)| frame_entry(*fr, v, &[], extra))
+            .map(|(fr, v)| frame_entry(*fr, v, &[], color))
             .collect()
     })
 }
@@ -235,7 +251,10 @@ fn time_table(t: &TimeTable, sheet: &Sheet) -> Value {
     // Field 0 is always there; the other two are written only where the sheet
     // has something to put in them, so a cells-only sheet is byte for byte
     // what it was before this crate could carry the rest.
-    let mut fields = vec![field(FIELD_CELL, field_tracks(cell_frames(t, true, None)))];
+    let mut fields = vec![field(
+        FIELD_CELL,
+        field_tracks(cell_frames(t, XDTS_DIALECT)),
+    )];
     let mut headers = vec![Value::obj()
         .with("fieldId", FIELD_CELL)
         .with("names", names(&t.columns))];
@@ -243,7 +262,7 @@ fn time_table(t: &TimeTable, sheet: &Sheet) -> Value {
         if f.is_empty() {
             continue;
         }
-        fields.push(field(id, field_tracks(value_frames(f, None))));
+        fields.push(field(id, field_tracks(value_frames(f, XDTS_DIALECT))));
         headers.push(
             Value::obj()
                 .with("fieldId", id)
@@ -332,9 +351,9 @@ fn header_names(h: &Value, id: u32) -> Option<Vec<String>> {
 }
 
 /// One decoded column before it is given to a field: `(frame, values,
-/// options)` per change point, since `options` belongs to a cell and the
-/// other two fields have no use for it.
-type Column = Vec<(usize, Vec<String>, Vec<String>)>;
+/// options, fontColorId)` per change point, since the last two belong to a
+/// cell and the other two fields have no use for them.
+type Column = Vec<(usize, Vec<String>, Vec<String>, u32)>;
 
 /// One field's columns, in track order, with the highest frame number seen.
 ///
@@ -369,6 +388,11 @@ fn tracks_of(tt: &Value, id: u32) -> (Vec<Column>, usize) {
                     .get("data")
                     .and_then(|d| d.as_array())
                     .and_then(|d| d.first());
+                let font_color = data
+                    .and_then(|d| d.get("fontColorId"))
+                    .and_then(|c| c.as_f64())
+                    .unwrap_or(0.0)
+                    .max(0.0) as u32;
                 let strings = |key: &str| -> Vec<String> {
                     data.and_then(|d| d.get(key))
                         .and_then(|v| v.as_array())
@@ -380,7 +404,7 @@ fn tracks_of(tt: &Value, id: u32) -> (Vec<Column>, usize) {
                 max_frame = max_frame.max(f);
                 // `options` is the p1 extension's and is simply absent from a
                 // file that does not use it.
-                frames.push((f, strings("values"), strings("options")));
+                frames.push((f, strings("values"), strings("options"), font_color));
             }
             frames.sort_by_key(|(f, ..)| *f);
             decoded.push((no, frames));
@@ -405,7 +429,7 @@ fn field_from_value(tt: &Value, id: u32) -> (Field, usize) {
     let tracks = decoded
         .into_iter()
         .map(|frames| ValueTrack {
-            frames: frames.into_iter().map(|(f, v, _)| (f, v)).collect(),
+            frames: frames.into_iter().map(|(f, v, ..)| (f, v)).collect(),
         })
         .collect();
     (Field { columns, tracks }, max_frame)
@@ -413,14 +437,14 @@ fn field_from_value(tt: &Value, id: u32) -> (Field, usize) {
 
 /// The cell field, whose change points are single values with the marks on
 /// them.
-fn cells_from_value(tt: &Value) -> (Vec<Track>, usize) {
-    let (decoded, max_frame) = tracks_of(tt, FIELD_CELL);
+fn cells_from_value(tt: &Value, id: u32) -> (Vec<Track>, usize) {
+    let (decoded, max_frame) = tracks_of(tt, id);
     let tracks = decoded
         .into_iter()
         .map(|frames| Track {
             frames: frames
                 .into_iter()
-                .map(|(f, mut values, options)| {
+                .map(|(f, mut values, options, font_color)| {
                     // A cell holds one value; anything past the first is not
                     // something the format puts in this field.
                     let value = if values.is_empty() {
@@ -428,7 +452,14 @@ fn cells_from_value(tt: &Value) -> (Vec<Track>, usize) {
                     } else {
                         values.swap_remove(0)
                     };
-                    (f, Cell { value, options })
+                    (
+                        f,
+                        Cell {
+                            value,
+                            options,
+                            font_color,
+                        },
+                    )
                 })
                 .collect(),
         })
@@ -444,13 +475,21 @@ fn cells_from_value(tt: &Value) -> (Vec<Track>, usize) {
 /// version 10 file is the camera position as well as the direction.
 pub fn time_table_from_value(tt: &Value) -> TimeTable {
     let duration = tt.get("duration").and_then(|d| d.as_f64()).unwrap_or(0.0) as usize;
-    let (tracks, cell_end) = cells_from_value(tt);
+    // TDTS has two cell columns and shows the other one where it has
+    // anything in it. XDTS files have no field 4, so this costs them a look
+    // that finds nothing.
+    let mut cell_field = FIELD_CELL;
+    let (mut tracks, mut cell_end) = cells_from_value(tt, FIELD_CELL);
+    let (alt, alt_end) = cells_from_value(tt, FIELD_CELL_ALT);
+    if alt.iter().any(|t| !t.frames.is_empty()) {
+        (cell_field, tracks, cell_end) = (FIELD_CELL_ALT, alt, alt_end);
+    }
     let columns = tt
         .get("timeTableHeaders")
         .and_then(|h| h.as_array())
         .unwrap_or(&[])
         .iter()
-        .find_map(|h| header_names(h, FIELD_CELL))
+        .find_map(|h| header_names(h, cell_field))
         .unwrap_or_default();
     let (dialogue, dialogue_end) = field_from_value(tt, FIELD_DIALOG);
     let (camera, camera_end) = field_from_value(tt, FIELD_CAMERA);
@@ -460,10 +499,20 @@ pub fn time_table_from_value(tt: &Value) -> TimeTable {
         duration: if duration > 0 { duration } else { max_frame },
         columns,
         tracks,
+        cell_field,
         dialogue,
         camera,
-        // A TDTS key, read here because both formats' time tables are decoded
-        // by this one function. XDTS has no `direction` and simply has none.
+        // Set by the TDTS reader, which is the only place a sheet has a
+        // history: one `timeTables[]` entry on its own knows nothing of the
+        // ones beside it.
+        revisions: Vec::new(),
+        // TDTS keys, read here because both formats' time tables are decoded
+        // by this one function. XDTS has neither and simply has none.
+        color: tt
+            .get("color")
+            .and_then(|c| c.as_f64())
+            .unwrap_or(0.0)
+            .max(0.0) as u32,
         direction: tt.get("direction").map(|d| d.to_text()).unwrap_or_default(),
     }
 }
