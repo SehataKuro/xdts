@@ -6,11 +6,16 @@
 //! `tests/data/saved_v10.tdts` is the shape of a sheet the 東映 digital
 //! timesheet itself saved, checked against a real one key for key and byte
 //! for byte and holding none of its contents (see NOTICE), and it is the TDTS
-//! reference. `synthetic_v7.tdts` and `synthetic_v5.xdts` are another
-//! editor's invented samples (MIT; see NOTICE): they are read here, and the
-//! XDTS one is the key reference for want of a real XDTS file, but the TDTS
-//! one is not a reference for anything — following it is how this crate came
-//! to write a key no saved sheet has.
+//! reference. `csp_v5.xdts` is the same thing for XDTS: the key order and
+//! layout of a sheet CLIP STUDIO PAINT EX exported, with invented contents,
+//! and the XDTS reference.
+//!
+//! `synthetic_v7.tdts` and `synthetic_v5.xdts` are another editor's invented
+//! samples (MIT; see NOTICE). They are read here, and their *keys* are worth
+//! checking against, but neither is a reference for key order: following the
+//! TDTS one is how this crate came to write a key no saved sheet has, and
+//! following the XDTS one is how it came to write an order no exported sheet
+//! has.
 
 use xdts::{
     json, tdts, xdts as x, Cell, Field, Process, Sheet, TimeTable, Track, ValueTrack, Work,
@@ -792,18 +797,19 @@ fn a_saved_sheet_is_written_back_byte_for_byte() {
 
 /// The keys of an XDTS file go in the order the files have them, which is
 /// not alphabetical and not the order the specification lists the properties
-/// in: `timeTables`, `version`, `header`, with the contents of a field or a
-/// track before the number that identifies it.
+/// in: `version`, `header`, `timeTables`, with the number that identifies a
+/// track or a frame before the contents it numbers.
 ///
-/// `synthetic_v5.xdts` is another editor's file, and an XDTS saved out of a
-/// real production sheet has exactly the same order, in all four places this
-/// crate used to differ. Two witnesses agreeing against it is what settles
-/// it; this crate had put the keys in alphabetical order, which is TDTS's
-/// habit, not XDTS's.
+/// The witness is `csp_v5.xdts`, which is a sheet CLIP STUDIO PAINT EX
+/// exported. `synthetic_v5.xdts` is deliberately not the witness here. It is
+/// another editor's invented file, it has a different order, and taking it
+/// for one is how this crate came to write XDTS with its keys alphabetically
+/// — which is TDTS's habit, not XDTS's. An application that reads XDTS is
+/// worth more as evidence about XDTS than an editor that writes it.
 #[test]
 fn xdts_keys_are_in_the_order_the_files_have_them() {
     let mine = order_of(&x::to_string(&sample(), &WriteOptions::default()));
-    let theirs = order_of(&fixture("synthetic_v5.xdts"));
+    let theirs = order_of(&fixture("csp_v5.xdts"));
     for (path, keys) in &theirs {
         let ours = mine
             .iter()
@@ -815,6 +821,65 @@ fn xdts_keys_are_in_the_order_the_files_have_them() {
         let keys: Vec<&String> = keys.iter().collect();
         assert_eq!(ours, keys, "the keys of {path} are in another order");
     }
+}
+
+/// And the whole file, byte for byte, not just the order of the keys.
+///
+/// This is the XDTS half of what `saved_v10.tdts` does for TDTS. `csp_v5.xdts`
+/// was taken from a sheet CLIP STUDIO PAINT EX exported — this writer
+/// reproduced that 5,393-byte sheet exactly — but that sheet was production
+/// work, so the fixture is a sheet of the same shape (one timeline, two cell
+/// columns) with a made-up cut number and timing.
+#[test]
+fn xdts_is_written_the_way_clip_studio_paint_writes_it() {
+    let sheet = Sheet {
+        cut: "7".into(),
+        scene: "2".into(),
+        tables: vec![TimeTable {
+            name: "タイムライン1".into(),
+            duration: 48,
+            columns: vec!["A".into(), "Amask".into()],
+            tracks: vec![
+                Track {
+                    frames: vec![
+                        (0, "1".into()),
+                        (6, "2".into()),
+                        (12, "3".into()),
+                        (24, "4".into()),
+                        (48, xdts::NULL_CELL.into()),
+                    ],
+                },
+                Track {
+                    frames: vec![(0, xdts::NULL_CELL.into())],
+                },
+            ],
+            ..TimeTable::default()
+        }],
+        ..Sheet::default()
+    };
+    assert_eq!(
+        x::to_string(&sheet, &WriteOptions::default()),
+        fixture("csp_v5.xdts"),
+        "this is not what CLIP STUDIO PAINT EX would have written"
+    );
+}
+
+/// And it reads back, so the order is not something only this writer
+/// understands.
+#[test]
+fn the_clip_studio_paint_sheet_survives_being_rewritten() {
+    let s = x::from_str(&fixture("csp_v5.xdts")).expect("xdts");
+    assert_eq!((s.cut.as_str(), s.scene.as_str()), ("7", "2"));
+    let t = &s.tables[0];
+    assert_eq!(t.name, "タイムライン1");
+    assert_eq!(t.duration, 48);
+    assert_eq!(t.columns, ["A", "Amask"]);
+    assert_eq!(t.tracks.len(), 2);
+    assert_eq!(t.tracks[0].value_at(12).unwrap(), "3");
+    assert_eq!(
+        x::to_string(&s, &WriteOptions::default()),
+        fixture("csp_v5.xdts")
+    );
 }
 
 /// TDTS puts its keys the other way round, and that is not a guess either:

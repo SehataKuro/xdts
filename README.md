@@ -126,18 +126,20 @@ TDTS には書き出しません。TDTS は別の形式で、東映 DTS がこ�
 
 キーは**ファイルが持っている順**に書きます。これはアルファベット順でも仕様書のプロパティ順でもありません。
 
-| | 順序 |
-|---|---|
-| 直下 | `timeTables`, `version`, `header` |
-| `fields[]` | `tracks`, `fieldId` |
-| `tracks[]` | `trackNo`, `frames` |
-| `timeTableHeaders[]` | `names`, `fieldId` |
+| | XDTS（クリスタの順） | TDTS（アルファベット順） |
+|---|---|---|
+| 直下 | `version`, `header`, `timeTables` | `timeSheets`, `version` |
+| `timeTables[]` | `name`, `duration`, `timeTableHeaders`, `fields` | `color`, `direction`, `duration`, `fields`, … |
+| `fields[]` | `fieldId`, `tracks` | `fieldId`, `tracks` |
+| `tracks[]` | `trackNo`, `frames` | `frames`, `trackNo` |
+| `frames[]` | `frame`, `data` | `data`, `frame` |
+| `timeTableHeaders[]` | `fieldId`, `names` | `fieldId`, `names` |
 
-欄やトラックの「中身」が先で、それを識別する番号が後です。**TDTS は逆で、全体がアルファベット順**です（`fieldId`, `tracks` / `frames`, `trackNo`）。形式が違えば書き手も違う、ということです。
+XDTS は**番号が先で、それが数える中身が後**です（`trackNo` → `frames`、`frame` → `data`）。TDTS は全体がアルファベット順なので、その2つは逆になります。`fieldId` はどちらも先頭です——クリスタの順がそうで、かつアルファベット順でも `fieldId` が先に来るからで、ここだけは2つの形式が一致します。
 
-JSON にとっては無意味な差ですが、アプリケーションが保存したシートと diff が取れないファイルは信用しにくくなります。この順序については、別のエディタのサンプルと、実際の制作シートから書き出された XDTS の**2つが一致**しています（このクレートは当初アルファベット順に書いていました——それは TDTS の癖で、XDTS の癖ではありませんでした）。
+JSON にとっては無意味な差ですが、アプリケーションが保存したシートと diff が取れないファイルは信用しにくくなります。根拠はそれぞれ**実際のアプリケーションが書いたファイル1つ**です——TDTS は東映 DTS が保存したシート、XDTS は CLIP STUDIO PAINT EX が書き出したシートで、どちらも**バイト単位で一致**することを `tests/data/saved_v10.tdts` と `tests/data/csp_v5.xdts` に対して検証しています。
 
-ただし**レイアウトは2つで一致しません**。一方は全体を1行で書き、もう一方は1キーごとに改行してインデントなし・コロンの後に空白なしです。したがって XDTS に TDTS のような「バイト単位で一致」はありません。`WriteOptions::pretty` はこのクレート自身の2つのレイアウトを選ぶだけのものです。
+`tests/data/synthetic_v5.xdts` は**この根拠ではありません**。別のエディタが書いた架空のサンプルで、キーの並びはクリスタのものと違います。これを XDTS の並びの根拠として読んだために、このクレートは一度 XDTS をアルファベット順で書いていました——それは TDTS の癖で、XDTS の癖ではありませんでした。`synthetic_v7.tdts` が `showHeaderDummy` という保存シートに無いキーを持っているのと同じ話で、エディタの出力はその形式の根拠にはなりません。
 
 ## 2つの形式の違い
 
@@ -152,7 +154,7 @@ JSON にとっては無意味な差ですが、アプリケーションが保存
 | 包み | — | `timeSheets` の中に **`free`** が並ぶ |
 | `timeTableHeaders` | 書いた欄だけ | **0〜5 の全欄** |
 | シートヘッダ | `cut`, `scene` | `episode`, `showHeadDummy`, `timeTableFontColors`, `workSlip` が付く |
-| タイムテーブル | `duration`, `name`, `fields`, `timeTableHeaders` | `color`, `direction`, `headDummykomas`, `footDummykomas` が付く |
+| タイムテーブル | `name`, `duration`, `timeTableHeaders`, `fields` | `color`, `direction`, `headDummykomas`, `footDummykomas` が付く |
 
 改行は **LF、BOM なし、インデントは4スペース**です。これはアプリケーションが実際に保存したシートを確認した結果で、以前このクレートが CRLF で書いていたのは誤りでした。読み込みは CRLF も BOM も受け付けます。
 
