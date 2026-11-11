@@ -289,6 +289,9 @@ fn write_value(out: &mut String, v: &Value, depth: usize, pretty: Option<usize>)
 /// 128 is serde_json's limit too, so the two refuse the same files.
 pub const MAX_DEPTH: usize = 128;
 
+/// How many keys an object may have before they are looked up by hash.
+const INDEX_AFTER: usize = 16;
+
 struct Parser<'a> {
     s: &'a [u8],
     i: usize,
@@ -347,6 +350,11 @@ impl<'a> Parser<'a> {
                 self.enter()?;
                 self.i += 1;
                 let mut m: Vec<(String, Value)> = Vec::new();
+                // Where each key is in `m`, once there are enough of them for
+                // a scan to cost something. A sheet's objects have a dozen
+                // keys and never get one; a file with fifty thousand used to
+                // take a second, and a few megabytes of them minutes.
+                let mut index: Option<std::collections::HashMap<String, usize>> = None;
                 self.ws();
                 if self.peek() == Some(b'}') {
                     self.i += 1;
@@ -360,9 +368,26 @@ impl<'a> Parser<'a> {
                     let v = self.value()?;
                     // A repeated key takes the later value, in the first
                     // one's place, as serde_json and most readers do.
-                    match m.iter_mut().find(|(key, _)| *key == k) {
-                        Some(slot) => slot.1 = v,
-                        None => m.push((k, v)),
+                    let at = match &index {
+                        Some(ix) => ix.get(&k).copied(),
+                        None => m.iter().position(|(key, _)| *key == k),
+                    };
+                    match at {
+                        Some(i) => m[i].1 = v,
+                        None => {
+                            if let Some(ix) = &mut index {
+                                ix.insert(k.clone(), m.len());
+                            }
+                            m.push((k, v));
+                            if index.is_none() && m.len() > INDEX_AFTER {
+                                index = Some(
+                                    m.iter()
+                                        .enumerate()
+                                        .map(|(i, (k, _))| (k.clone(), i))
+                                        .collect(),
+                                );
+                            }
+                        }
                     }
                     self.ws();
                     match self.peek() {

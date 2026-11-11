@@ -289,3 +289,34 @@ fn the_fixtures_read_alike() {
         agree(body);
     }
 }
+
+/// Past a handful of keys an object is looked up by hash rather than by
+/// scanning, and a repeated key must still take the later value in the first
+/// one's place on both sides of that switch.
+#[test]
+fn many_keys_and_repeated_ones_agree() {
+    let mut rng = Rng(0x0b1e_c7_0000_0003);
+    for n in [1, 15, 16, 17, 40, 300] {
+        for _ in 0..50 {
+            let pairs: Vec<String> = (0..n)
+                .map(|_| format!("\"k{}\":{}", rng.below(n.max(2)), rng.below(1000)))
+                .collect();
+            agree(&format!("{{{}}}", pairs.join(",")));
+        }
+    }
+}
+
+/// A big object is read in time proportional to its size. Looking each key
+/// up by scanning the ones before it made this take minutes; it should take
+/// well under a second, and the bound is loose so that a slow machine does
+/// not fail it.
+#[test]
+fn a_big_object_is_read_in_linear_time() {
+    let body: Vec<String> = (0..100_000).map(|i| format!("\"k{i}\":0")).collect();
+    let text = format!("{{{}}}", body.join(","));
+    let t = std::time::Instant::now();
+    let v = json::parse(&text).unwrap();
+    let took = t.elapsed();
+    assert!(matches!(v, Value::Object(ref m) if m.len() == 100_000));
+    assert!(took.as_secs() < 10, "100,000 keys took {took:?}");
+}
