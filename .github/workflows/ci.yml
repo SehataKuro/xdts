@@ -1,0 +1,60 @@
+# Everything this crate claims, checked on every push.
+#
+# Only one action from outside this repository is used, actions/checkout.
+# Rust comes from the rustup that GitHub's runners already have, so nothing
+# else is trusted to install it.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: fmt, clippy, docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update stable && rustup default stable
+      - run: rustup component add rustfmt clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      # Every public item is documented (`#![warn(missing_docs)]`), and the
+      # documentation builds without a broken link.
+      - run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    # Windows as well as Linux, because line endings are part of what this
+    # crate gets right or wrong: the fixtures must reach the tests byte for
+    # byte, which is what .gitattributes is for, and only a Windows checkout
+    # shows whether it works.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update stable && rustup default stable
+      - run: cargo test
+
+  msrv:
+    name: build on rust-version
+    # The library on the oldest Rust that Cargo.toml says it supports. Only
+    # the library: the tests need serde_json, whose own minimum may move
+    # forward without this crate's doing so.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install 1.85 --profile minimal
+      - run: cargo +1.85 build --lib

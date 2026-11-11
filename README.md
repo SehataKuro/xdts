@@ -45,26 +45,31 @@ let back = xdts::from_str(&std::fs::read_to_string("cut012.tdts")?)?;
 シートは**変化点の列**です。これは両形式がファイルに持っている形そのもので、あるコマの内容は「直前の変化点が言ったこと」です。
 
 ```rust
-pub struct Sheet      { cut, scene, episode, operator: String, tables: Vec<TimeTable>,
-                        work_slip: WorkSlip,                     // 作業伝票
-                        show_head_dummy: bool, font_colors: Vec<[u8; 3]>,
-                        version: u32 }                           // 読んだ TDTS の version
-pub struct WorkSlip   { memo: String, processes: Vec<Process>, works: Vec<Work> }
-pub struct TimeTable  { name, duration, columns, tracks,        // セル欄
-                        cell_field: u32,                        // セル欄の欄ID（0 か 4）
-                        dialogue: Field, camera: Field,         // 台詞欄（3）、カメラワーク欄（5）
-                        revisions: Vec<TimeTable>,              // 過去のリビジョン（古い順）
-                        color: u32, direction: String }         // シートの色、欄の上の指示
-pub struct Track      { frames: Vec<(usize, Cell)> }             // (コマ番号, セル)
-pub struct Cell       { value: String, options: Vec<String>,     // 値＋p1のマーク
-                        font_color: u32 }                        // セルの文字色
-pub struct Field      { columns: Vec<String>, tracks: Vec<ValueTrack> }
-pub struct ValueTrack { frames: Vec<(usize, Vec<String>)> }      // (コマ番号, 値の並び)
+pub struct Sheet       { cut, scene, episode, operator: String, tables: Vec<TimeTable>,
+                         work_slip: WorkSlip,                     // 作業伝票
+                         show_head_dummy: bool, font_colors: Vec<[u8; 3]>,
+                         version: u32,                            // 読んだ TDTS の version
+                         read_from: Option<Format>,               // 読んだ形式
+                         extra: Extra, header_extra: Extra }      // 知らないキー
+pub struct WorkSlip    { memo: String, processes: Vec<Process>, works: Vec<Work>, extra: Extra }
+pub struct TimeTable   { name, duration, columns, tracks,        // セル欄
+                         cell_field: u32,                        // セル欄の欄ID（0 か 4）
+                         dialogue: Field, camera: Field,         // 台詞欄（3）、カメラワーク欄（5）
+                         revisions: Vec<TimeTable>,              // 過去のリビジョン（古い順）
+                         color: u32, direction: String,          // シートの色、欄の上の指示
+                         extra: Extra, sheet_extra: Extra }      // 知らないキー
+pub struct Track       { frames: Vec<(usize, Cell)> }             // (コマ番号, セル)
+pub struct Cell        { value: String, options: Vec<String>,     // 値＋p1のマーク
+                         font_color: u32 }                        // セルの文字色
+pub struct Field       { columns: Vec<String>, tracks: Vec<ValueTrack> }
+pub struct ValueTrack  { frames: Vec<(usize, Instruction)> }      // (コマ番号, 指示)
+pub struct Instruction { values: Vec<String>, font_color: u32 }   // 値の並び＋文字色
+pub type   Extra       = Vec<(String, json::Value)>;
 ```
 
 「1コマ1セル」で考えるアプリケーションは、書き出すときにこの形へ変換します。`Track::at(frame)` でそのコマのセル、`Track::value_at(frame)` で値だけを引けます。`Cell` は `"1".into()` で作れるので、マークを使わないかぎり値の文字列を書くだけで済みます。
 
-セル欄は1コマにつき値が1つなので `Track`、台詞欄とカメラワーク欄は値が並ぶので `ValueTrack` です。並びの順序は仕様書の通りで、台詞欄は〈キャラクター名、台詞〉の1〜2個、カメラワーク欄は〈指示、カメラ位置 X、Y、倍率、回転角、カメラ中心 X、Y〉の1〜7個です。足りない分は埋めません。
+セル欄は1コマにつき値が1つなので `Track`、台詞欄とカメラワーク欄は値が並ぶので `ValueTrack` です（`["A", "おはよう"].into()` で1つの指示になります）。並びの順序は仕様書の通りで、台詞欄は〈キャラクター名、台詞〉の1〜2個、カメラワーク欄は〈指示、カメラ位置 X、Y、倍率、回転角、カメラ中心 X、Y〉の1〜7個です。足りない分は埋めません。
 
 セルの値は動画番号そのものか、次の特殊文字列です。
 
@@ -173,6 +178,21 @@ version 5 は形が違い（包みが無く `timeTables` が直下）、この�
 
 `cut` と `scene` は公開スキーマでは `\d{1,4}` ですが、**書かれた値をそのまま出力します**。JSON Schema の `pattern` はアンカーなしの検索なので `C-112` も `12345` もこのパターンを満たしますし、数字を1つも含まない値の場合は空文字列にしても（`""` も `\d{1,4}` にマッチしないので）適合にはならず、番号だけが失われます。実際 `tests/data/synthetic_v5.xdts` は `"scene": ""` を持っています——アプリケーション自身が、自分のパターンが拒否する値を書いているわけです。仕様より厳しいリーダーに拒否されるのは目に見えて直せますが、カット番号が黙って書き換わるのは直せません。数字だけに落としたい場合は `xdts::header_number()` を呼んでください。
 
+## 知らないキー
+
+このクレートが知らないキーは、捨てずに `Extra` に**読んだ順のまま**保ち、書き出すときに戻します。対象は、新しいキーが実際に現れてきた5つの階層——文書の最上位、TDTS の `timeSheets[]` の各要素、ヘッダ、作業伝票、タイムテーブル——です。
+
+これまでに直したものの大半——`direction`、シート名、色、ダミーコマ、作業伝票——は、どれも「知らないキーを黙って捨てる」という同じ間違いでした。見つかるたびに1つずつモデルに場所を作ってきましたが、実物のシートとのバイト一致は「そのシートにあったキーを全部知っている」ことしか保証しません。まだ見つかっていないキーのための場所が `Extra` です。
+
+- **戻す位置**：TDTS ではアルファベット順の位置（保存されたシートはどの階層でもアルファベット順です）。XDTS は順序がアルファベット順ではないので、そのオブジェクトの末尾です。
+- **何を「知らない」とみなすか**：その形式の書き手がモデルから書くキー以外すべてです。したがって、このクレートが読みはするがその形式では書かないキー（XDTS ファイル中の `direction` など）も保ちます。
+- **形式をまたがない**：保ったキーは、読んだ形式にだけ書き戻します（`Sheet::read_from`）。TDTS の `books` が XDTS に紛れ込むことはありません。
+- `free` もこの仕組みで扱います。中身があれば保ち、無ければアプリケーションと同じく空の `free` を書きます。
+
+`fields[]` から下（トラック、フレーム、指示）は仕様で形が決まっていて、新しいキーが現れたことがないので対象外です。
+
+保ったキーは JSON の値で、JSON には浮動小数点があるため、`Sheet` と `TimeTable` は `PartialEq` であって `Eq` ではありません。
+
 ## 正しさの確かめ方
 
 TDTS 側の基準は `tests/data/saved_v10.tdts` です。これはこのクレートが書き出したファイルですが、**キー構成・キー順・インデント・改行を、アプリケーションが実際に保存したシートとバイト単位で突き合わせて確認**しています（そのシート自体と中身は入っていません。NOTICE を参照）。合成データの `synthetic_v7.tdts` は読み込みのテストにのみ使います——これを書き出しの基準にしていたために、このクレートは存在しないキー `showHeaderDummy` を書き続けていました。
@@ -196,6 +216,16 @@ JSON の読み書きはこのクレートの中にあり、外部のクレート
 を確かめています。パーサは RFC 8259 に厳密で、例外は先頭の BOM を読み飛ばすことと、入れ子を128段（`serde_json` と同じ）までに制限することの2つだけです。
 
 このテストを入れる前のパーサには、`+1` や `01`、存在しないエスケープ、文字列中の生の制御文字を受け入れる、フォームフィードを空白とみなす、対になっていないサロゲートが後ろの文字を巻き込んで消す、`1e400` を無限大として読む、入れ子1,000段ほどのファイルでスタックを使い果たしてプロセスごと落ちる、小数を4桁に丸めて書く、といったバグがありました。古いパーサに対してこのテストを走らせると、そのほとんどを手書きの罠ではなくランダム生成の入力が自力で見つけます。
+
+## CI
+
+push のたびに GitHub Actions で次を確かめます（`.github/workflows/ci.yml`）。
+
+- `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo doc`（警告をエラーとして）
+- `cargo test` を **Linux と Windows** で。改行はこのクレートが正しくも間違ってもきた部分で、fixture がバイト単位のままテストに届くか（`.gitattributes` が効いているか）は Windows のチェックアウトでしか分かりません
+- `Cargo.toml` の `rust-version`（1.85）でライブラリがビルドできること
+
+外部の Action は `actions/checkout` だけで、Rust はランナーに入っている rustup で用意します。
 
 ## ライセンス
 
