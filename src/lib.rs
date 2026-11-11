@@ -69,6 +69,7 @@
 //! extension; see [`xdts::SUBVERSION_P1`].
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use std::fmt;
 
@@ -113,6 +114,7 @@ pub const OPTION_KEYFRAME: &str = "OPTION_KEYFRAME";
 pub const OPTION_REFERENCEFRAME: &str = "OPTION_REFERENCEFRAME";
 
 #[derive(Debug)]
+/// What can go wrong reading a sheet.
 pub enum Error {
     /// The text is not a sheet of this format.
     Parse(String),
@@ -137,7 +139,9 @@ impl std::error::Error for Error {}
 /// exactly as it was before this crate could carry them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Cell {
+    /// The drawing number as written, or one of the symbol strings.
     pub value: String,
+    /// The p1 marks on it, usually none.
     pub options: Vec<String>,
     /// The index into the sheet's own text colours that this cell is written
     /// in. A TDTS key (`fontColorId`), 0 for the first colour, which is
@@ -210,6 +214,7 @@ impl fmt::Display for Cell {
 /// stopped.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Track {
+    /// The change points, in frame order.
     pub frames: Vec<(usize, Cell)>,
 }
 
@@ -249,6 +254,8 @@ impl Track {
 /// value is the string as written, because that is all the format says it is.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ValueTrack {
+    /// The change points, in frame order, each with the whole list of
+    /// values its instruction carries.
     pub frames: Vec<(usize, Vec<String>)>,
 }
 
@@ -268,6 +275,7 @@ impl ValueTrack {
 pub struct Field {
     /// Column names, indexed by track number.
     pub columns: Vec<String>,
+    /// The columns, indexed by track number.
     pub tracks: Vec<ValueTrack>,
 }
 
@@ -292,6 +300,7 @@ impl Field {
 /// One sheet of a cut: its length, its column names and its columns.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TimeTable {
+    /// The sheet's name. The application numbers them sheet1, sheet2, …
     pub name: String,
     /// Length in frames. At least 1 in a valid file.
     pub duration: usize,
@@ -325,6 +334,7 @@ pub struct TimeTable {
     /// Dummy frames before the sheet starts (`headDummykomas`) and after it
     /// ends (`footDummykomas`). TDTS keys; a real sheet had 24 and 48.
     pub head_dummy: usize,
+    /// Dummy frames after the sheet ends (`footDummykomas`).
     pub foot_dummy: usize,
     /// The sheet's written direction — the line of text above the columns,
     /// such as `◇PAN A→B 全尺`.
@@ -334,17 +344,103 @@ pub struct TimeTable {
     pub direction: String,
 }
 
+/// One of the work slip's rows of names: who did a process, and in what
+/// role.
+///
+/// A saved sheet has three of these, blank or not.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Process {
+    /// 作監補 / assistant.
+    pub assistant: String,
+    /// 作監 / chief.
+    pub chief: String,
+    /// 演出 / director.
+    pub director: String,
+    /// The free row's name.
+    pub free: String,
+    /// What the free row is called.
+    pub free_role: String,
+}
+
+/// One artist and the number of sheets they drew.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WorkTrack {
+    /// Who drew them.
+    pub artist: String,
+    /// 枚数 — how many sheets.
+    pub sheets: u32,
+}
+
+/// One of the work slip's two tables of artists, and whether it is in use.
+///
+/// A saved sheet has seven [`WorkTrack`]s in each.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Work {
+    /// Whether the application shows this table.
+    pub enable: bool,
+    /// The artists, seven rows of them in a saved sheet.
+    pub tracks: Vec<WorkTrack>,
+}
+
+/// The work slip (作業伝票) a TDTS sheet carries: the memo, who worked on it
+/// and how many sheets they drew.
+///
+/// A saved sheet always has the whole form, blank or not — three
+/// [`Process`]es and two [`Work`]s of seven tracks — and the writer fills out
+/// whatever this does not have, because a file without the form is not the
+/// format. XDTS has no work slip, so it survives one format and not the
+/// other.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WorkSlip {
+    /// The free note at the top of the slip.
+    pub memo: String,
+    /// Who did each process. A saved sheet has three.
+    pub processes: Vec<Process>,
+    /// Who drew how much. A saved sheet has two.
+    pub works: Vec<Work>,
+}
+
+impl WorkSlip {
+    /// Whether anything has been written on it.
+    pub fn is_empty(&self) -> bool {
+        self.memo.is_empty()
+            && self.processes.iter().all(|p| p == &Process::default())
+            && self
+                .works
+                .iter()
+                .all(|w| !w.enable && w.tracks.iter().all(|t| t == &WorkTrack::default()))
+    }
+}
+
 /// A whole document: the sheet header and its time tables.
 ///
 /// `episode` has a place in TDTS and none in XDTS, so it survives one format
 /// and not the other.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Sheet {
+    /// Cut number, as whoever wrote it wrote it.
     pub cut: String,
+    /// Scene number, likewise.
     pub scene: String,
+    /// Episode. A TDTS key with no XDTS counterpart.
     pub episode: String,
+    /// The name on the sheet. Written to `operatorName`, a key no published
+    /// schema has.
     pub operator: String,
+    /// The sheets of this cut.
     pub tables: Vec<TimeTable>,
+    /// The work slip. A TDTS key with no XDTS counterpart.
+    pub work_slip: WorkSlip,
+    /// Whether the application shows the dummy frames at the head of the
+    /// sheet (`showHeadDummy`). A TDTS key.
+    pub show_head_dummy: bool,
+    /// The six text colours a cell's [`Cell::font_color`] indexes into, as
+    /// RGB. Empty means the application's own six, which is what every sheet
+    /// seen so far has. A TDTS key.
+    pub font_colors: Vec<[u8; 3]>,
+    /// The TDTS version this sheet was read from, or 0 for a sheet that was
+    /// not read from one. See [`tdts::to_value`] for what is written back.
+    pub version: u32,
 }
 
 /// How to write a sheet out.

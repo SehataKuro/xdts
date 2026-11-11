@@ -5,16 +5,28 @@ use crate::Error;
 use std::fmt::Write as _;
 
 #[derive(Clone, Debug, PartialEq)]
+/// One JSON value.
+///
+/// Enough of JSON to read and write a time sheet, and no more: the
+/// numbers are `f64`, and an object keeps its keys in the order they were
+/// written, because matching a file an application saved depends on it.
 pub enum Value {
+    /// `null`.
     Null,
+    /// `true` or `false`.
     Bool(bool),
+    /// A number. JSON has only the one kind.
     Number(f64),
+    /// A string, unescaped.
     String(String),
+    /// An array.
     Array(Vec<Value>),
+    /// An object, in the order its keys were written.
     Object(Vec<(String, Value)>),
 }
 
 impl Value {
+    /// An object with nothing in it yet, to be filled by [`Value::with`].
     pub fn obj() -> Self {
         Value::Object(Vec::new())
     }
@@ -27,6 +39,7 @@ impl Value {
         self
     }
 
+    /// The value under `key`, if this is an object that has one.
     pub fn get(&self, key: &str) -> Option<&Value> {
         match self {
             Value::Object(m) => m.iter().find(|(k, _)| k == key).map(|(_, v)| v),
@@ -34,6 +47,7 @@ impl Value {
         }
     }
 
+    /// The text if this is a string, and nothing for any other kind.
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Value::String(s) => Some(s),
@@ -41,6 +55,15 @@ impl Value {
         }
     }
 
+    /// The value if it is `true` or `false`.
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Value::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    /// The number if this is one.
     pub fn as_f64(&self) -> Option<f64> {
         match self {
             Value::Number(n) => Some(*n),
@@ -48,6 +71,7 @@ impl Value {
         }
     }
 
+    /// The elements if this is an array.
     pub fn as_array(&self) -> Option<&[Value]> {
         match self {
             Value::Array(a) => Some(a),
@@ -56,6 +80,8 @@ impl Value {
     }
 
     /// Lenient string view: numbers are formatted, strings returned as-is.
+    /// This value as text: a string as itself, a number or a boolean as it
+    /// would be written, and anything else as nothing.
     pub fn to_text(&self) -> String {
         match self {
             Value::String(s) => s.clone(),
@@ -79,6 +105,7 @@ impl Value {
         s
     }
 
+    /// All on one line, which is how one of the editors writes a sheet.
     pub fn to_compact(&self) -> String {
         let mut s = String::new();
         write_value(&mut s, self, 0, None);
@@ -405,6 +432,7 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// Read one JSON document, keeping the order of every object's keys.
 pub fn parse(text: &str) -> Result<Value, Error> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut p = Parser {

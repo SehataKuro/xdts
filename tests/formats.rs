@@ -13,8 +13,8 @@
 //! to write a key no saved sheet has.
 
 use xdts::{
-    json, tdts, xdts as x, Cell, Field, Sheet, TimeTable, Track, ValueTrack, WriteOptions,
-    FIELD_CELL_ALT, OPTION_KEYFRAME, OPTION_REFERENCEFRAME,
+    json, tdts, xdts as x, Cell, Field, Process, Sheet, TimeTable, Track, ValueTrack, Work,
+    WorkSlip, WorkTrack, WriteOptions, FIELD_CELL_ALT, OPTION_KEYFRAME, OPTION_REFERENCEFRAME,
 };
 
 fn sample() -> Sheet {
@@ -51,6 +51,7 @@ fn sample() -> Sheet {
             ],
             ..TimeTable::default()
         }],
+        ..Sheet::default()
     }
 }
 
@@ -839,4 +840,120 @@ fn tdts_keys_are_in_its_own_order() {
         let ours = mine.iter().find(|(p, _)| p == path).map(|(_, k)| k);
         assert_eq!(ours, Some(keys), "the keys of {path} are in another order");
     }
+}
+
+/// The work slip is a form someone fills in: the memo, who worked on the
+/// cut, and how many sheets they drew. Writing it back blank throws away
+/// work that was recorded about work.
+#[test]
+fn the_work_slip_is_not_blanked() {
+    let mut s = sample();
+    s.work_slip = WorkSlip {
+        memo: "リテイク分".into(),
+        processes: vec![Process {
+            chief: "作監".into(),
+            free: "特効".into(),
+            free_role: "役職".into(),
+            ..Process::default()
+        }],
+        works: vec![Work {
+            enable: true,
+            tracks: vec![
+                WorkTrack {
+                    artist: "原画A".into(),
+                    sheets: 42,
+                },
+                WorkTrack {
+                    artist: "原画B".into(),
+                    sheets: 7,
+                },
+            ],
+        }],
+    };
+    s.show_head_dummy = true;
+    s.font_colors = vec![[1, 2, 3], [4, 5, 6]];
+
+    let text = tdts::to_string(&s, &WriteOptions::default());
+    assert!(text.contains("リテイク分"), "the memo was dropped");
+    assert!(text.contains("原画A"), "an artist was dropped");
+    assert!(
+        text.contains("\"numberOfSheets\": 42"),
+        "a sheet count was dropped"
+    );
+    assert!(
+        text.contains("\"showHeadDummy\": true"),
+        "showHeadDummy was reset"
+    );
+
+    let back = tdts::from_str(&text).unwrap();
+    assert_eq!(back.work_slip.memo, "リテイク分");
+    assert_eq!(back.work_slip.processes[0].chief, "作監");
+    assert_eq!(back.work_slip.processes[0].free_role, "役職");
+    assert_eq!(back.work_slip.works[0].tracks[0].artist, "原画A");
+    assert_eq!(back.work_slip.works[0].tracks[0].sheets, 42);
+    assert!(back.work_slip.works[0].enable);
+    assert!(back.show_head_dummy);
+    assert_eq!(back.font_colors[..2], [[1, 2, 3], [4, 5, 6]]);
+
+    // The rest of the form is still there, blank, because a file without the
+    // whole of it is not the format.
+    assert_eq!(back.work_slip.processes.len(), 3);
+    assert_eq!(back.work_slip.works.len(), 2);
+    assert_eq!(back.work_slip.works[0].tracks.len(), 7);
+    assert!(!back.work_slip.works[1].enable);
+    assert_eq!(back.work_slip.works[1].tracks.len(), 7);
+    assert!(back.work_slip.works[1]
+        .tracks
+        .iter()
+        .all(|t| t == &WorkTrack::default()));
+}
+
+/// A sheet with nothing written on the slip says so, and writes the same
+/// empty form a saved sheet has.
+#[test]
+fn an_empty_work_slip_is_still_the_whole_form() {
+    assert!(sample().work_slip.is_empty());
+    let text = tdts::to_string(&sample(), &WriteOptions::default());
+    assert!(text.contains("\"workSlip\""));
+    assert!(text.contains("\"numberOfSheets\": 0"));
+    let back = tdts::from_str(&text).unwrap();
+    assert!(back.work_slip.is_empty(), "an empty slip came back filled");
+    // And the usual colours are no colours of this sheet's own.
+    assert!(back.font_colors.is_empty());
+}
+
+/// A file read as version 7 is written back as 7. Moving it to 10 behind the
+/// caller's back is how a file stops opening in the application that wrote
+/// it, and nothing shows the keys differ between the two.
+#[test]
+fn the_version_a_file_was_read_with_is_written_back() {
+    let seven = tdts::from_str(&fixture("synthetic_v7.tdts")).unwrap();
+    assert_eq!(seven.version, 7);
+    assert_eq!(tdts::version(&seven), 7);
+    let text = tdts::to_string(&seven, &WriteOptions::default());
+    assert!(text.contains("\"version\": 7"), "the version was moved");
+    assert_eq!(tdts::from_str(&text).unwrap().version, 7);
+
+    // The saved sheet is 10 and stays 10.
+    let ten = tdts::from_str(&fixture("saved_v10.tdts")).unwrap();
+    assert_eq!(tdts::version(&ten), 10);
+
+    // A sheet of this crate's own making is 10.
+    assert_eq!(sample().version, 0);
+    assert_eq!(tdts::version(&sample()), 10);
+    assert!(tdts::to_string(&sample(), &WriteOptions::default()).contains("\"version\": 10"));
+}
+
+/// Version 5 keeps its time tables at the top level, a shape this crate
+/// reads and does not write, so such a file comes back as 10 — an upgrade,
+/// and not a `timeSheets` wrapper labelled 5.
+#[test]
+fn a_version_5_tdts_comes_back_as_10() {
+    let body = x::to_value(&sample()).to_pretty();
+    let old = format!("{}\n{}\n", tdts::HEADER, body);
+    let s = tdts::from_str(&old).unwrap();
+    assert_eq!(s.version, 5, "the version was not read");
+    let text = tdts::to_string(&s, &WriteOptions::default());
+    assert!(text.contains("\"version\": 10"), "a wrapper was labelled 5");
+    assert!(text.contains("\"timeSheets\": ["));
 }

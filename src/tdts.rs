@@ -29,7 +29,8 @@
 //!
 //! Version 5 is the older form, with `timeTables` at the top level and no
 //! wrapper, so `timeSheets` carrying `version: 5` is a shape no reader
-//! expects. [`from_str`] accepts both.
+//! expects. [`from_str`] accepts both, and [`version`] says what is written
+//! back: the version a file was read with, where that shape can be written.
 //!
 //! Two of those keys are worth a note, because this crate had them wrong
 //! until a saved sheet turned up. It wrote `showHeaderDummy`, which no saved
@@ -81,9 +82,11 @@
 use crate::json::{self, Value};
 use crate::xdts;
 use crate::{
-    Error, Sheet, TimeTable, WriteOptions, FIELD_CAMERA, FIELD_CELL, FIELD_CELL_ALT, FIELD_DIALOG,
+    Error, Process, Sheet, TimeTable, Work, WorkSlip, WorkTrack, WriteOptions, FIELD_CAMERA,
+    FIELD_CELL, FIELD_CELL_ALT, FIELD_DIALOG,
 };
 
+/// The first line of every TDTS file, which is how one is recognised.
 pub const HEADER: &str = "toeiDigitalTimeSheet Save Data";
 
 /// The version a sheet saved by the application carries, and what this crate
@@ -95,7 +98,7 @@ const INDENT: usize = 4;
 
 /// The application's own text colours: black, red, green, blue, purple,
 /// orange.
-const FONT_COLORS: [[i64; 3]; 6] = [
+const FONT_COLORS: [[u8; 3]; 6] = [
     [0, 0, 0],
     [224, 0, 0],
     [32, 128, 32],
@@ -108,31 +111,93 @@ fn strings(v: &[&str]) -> Value {
     Value::Array(v.iter().map(|s| Value::from(*s)).collect())
 }
 
-/// A work slip with every field blank.
-fn empty_work_slip() -> Value {
-    let process = || {
+/// The work slip, with the rest of the form filled out blank.
+///
+/// A saved sheet has three processes and two works of seven tracks whether
+/// or not anyone wrote in them, so a shorter [`WorkSlip`] is padded rather
+/// than written short: a file without the whole form is not the format.
+fn work_slip(w: &WorkSlip) -> Value {
+    let process = |p: Option<&Process>| {
+        let d = Process::default();
+        let p = p.unwrap_or(&d);
         Value::obj()
-            .with("assistant", "")
-            .with("chief", "")
-            .with("director", "")
-            .with("free", "")
-            .with("freeRole", "")
+            .with("assistant", p.assistant.as_str())
+            .with("chief", p.chief.as_str())
+            .with("director", p.director.as_str())
+            .with("free", p.free.as_str())
+            .with("freeRole", p.free_role.as_str())
     };
-    let work = || {
-        let tracks: Vec<Value> = (0..7)
-            .map(|_| Value::obj().with("artist", "").with("numberOfSheets", 0u32))
+    let work = |w: Option<&Work>| {
+        let d = Work::default();
+        let w = w.unwrap_or(&d);
+        let tracks: Vec<Value> = (0..WORK_TRACKS)
+            .map(|i| {
+                let d = WorkTrack::default();
+                let t = w.tracks.get(i).unwrap_or(&d);
+                Value::obj()
+                    .with("artist", t.artist.as_str())
+                    .with("numberOfSheets", t.sheets)
+            })
             .collect();
         Value::obj()
-            .with("enable", false)
+            .with("enable", w.enable)
             .with("tracks", Value::Array(tracks))
     };
     Value::obj()
-        .with("memo", "")
+        .with("memo", w.memo.as_str())
         .with(
             "processes",
-            Value::Array((0..3).map(|_| process()).collect()),
+            Value::Array(
+                (0..PROCESSES)
+                    .map(|i| process(w.processes.get(i)))
+                    .collect(),
+            ),
         )
-        .with("works", Value::Array((0..2).map(|_| work()).collect()))
+        .with(
+            "works",
+            Value::Array((0..WORKS).map(|i| work(w.works.get(i))).collect()),
+        )
+}
+
+/// One `workSlip` as the application lays it out.
+const PROCESSES: usize = 3;
+const WORKS: usize = 2;
+const WORK_TRACKS: usize = 7;
+
+/// Read a work slip back.
+fn work_slip_from_value(v: &Value) -> WorkSlip {
+    let text = |o: &Value, k: &str| o.get(k).map(|v| v.to_text()).unwrap_or_default();
+    let array = |o: &Value, k: &str| o.get(k).and_then(|v| v.as_array()).unwrap_or(&[]).to_vec();
+    WorkSlip {
+        memo: text(v, "memo"),
+        processes: array(v, "processes")
+            .iter()
+            .map(|p| Process {
+                assistant: text(p, "assistant"),
+                chief: text(p, "chief"),
+                director: text(p, "director"),
+                free: text(p, "free"),
+                free_role: text(p, "freeRole"),
+            })
+            .collect(),
+        works: array(v, "works")
+            .iter()
+            .map(|w| Work {
+                enable: w.get("enable").and_then(|e| e.as_bool()).unwrap_or(false),
+                tracks: array(w, "tracks")
+                    .iter()
+                    .map(|t| WorkTrack {
+                        artist: text(t, "artist"),
+                        sheets: t
+                            .get("numberOfSheets")
+                            .and_then(|n| n.as_f64())
+                            .unwrap_or(0.0)
+                            .max(0.0) as u32,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
 }
 
 /// Column names, or the application's own defaults for a field this sheet
@@ -231,19 +296,28 @@ fn time_table(t: &TimeTable, sheet: &Sheet, index: usize) -> Value {
 
 /// The sheet header. Unlike XDTS this has somewhere to put the episode.
 pub fn header(sheet: &Sheet) -> Value {
-    let colors: Vec<Value> = FONT_COLORS
-        .iter()
-        .map(|c| Value::Array(c.iter().map(|&v| Value::from(v)).collect()))
-        .collect();
+    // The application's own six colours, unless the sheet came with others.
+    let colors: Vec<Value> = if sheet.font_colors.is_empty() {
+        FONT_COLORS
+            .iter()
+            .map(|c| Value::Array(c.iter().map(|&v| Value::from(v as i64)).collect()))
+            .collect()
+    } else {
+        sheet
+            .font_colors
+            .iter()
+            .map(|c| Value::Array(c.iter().map(|&v| Value::from(v as i64)).collect()))
+            .collect()
+    };
     Value::obj()
         .with("cut", sheet.cut.as_str())
         .with("episode", sheet.episode.as_str())
         .with("scene", sheet.scene.as_str())
         // `showHeadDummy`, not `showHeaderDummy`: the dummy frames at the
         // head of the sheet, as `headDummykomas` below counts them.
-        .with("showHeadDummy", false)
+        .with("showHeadDummy", sheet.show_head_dummy)
         .with("timeTableFontColors", Value::Array(colors))
-        .with("workSlip", empty_work_slip())
+        .with("workSlip", work_slip(&sheet.work_slip))
 }
 
 /// One `timeSheets[]` entry: a sheet, and the one revision of it this crate
@@ -256,6 +330,7 @@ fn time_sheet(sheet: &Sheet, tables: Vec<Value>) -> Value {
         .with("timeTables", Value::Array(tables))
 }
 
+/// The whole document, ready to be written.
 pub fn to_value(sheet: &Sheet) -> Value {
     // One `timeSheet` per time table, because the `timeTables` inside one of
     // them are revisions of a single sheet and not sheets of their own.
@@ -284,9 +359,28 @@ pub fn to_value(sheet: &Sheet) -> Value {
     }
     Value::obj()
         .with("timeSheets", Value::Array(sheets))
-        .with("version", VERSION)
+        .with("version", version(sheet))
 }
 
+/// The version to write: the one the sheet was read with, where this crate
+/// can write that shape, and [`VERSION`] otherwise.
+///
+/// Versions 7 and up all wrap their sheets in `timeSheets`, and nothing
+/// shows that a saved version 7 sheet has different keys from a saved
+/// version 10 one, so a file read as 7 is written back as 7 rather than
+/// silently moved forward. Version 5 is a different shape — the time tables
+/// at the top level, no wrapper — which this crate reads and does not write,
+/// so a version 5 file comes back as 10. That is an upgrade, and saying 5
+/// over the wrapper would be the exact lie this crate exists to prevent.
+pub fn version(sheet: &Sheet) -> u32 {
+    if sheet.version >= 7 {
+        sheet.version
+    } else {
+        VERSION
+    }
+}
+
+/// The whole file: the header line, the JSON, LF throughout.
 pub fn to_string(sheet: &Sheet, opts: &WriteOptions) -> String {
     let v = to_value(sheet);
     let body = if opts.pretty {
@@ -299,6 +393,11 @@ pub fn to_string(sheet: &Sheet, opts: &WriteOptions) -> String {
     format!("{HEADER}\n{body}\n")
 }
 
+/// Read a TDTS file, with or without a BOM and with either kind of line
+/// ending.
+///
+/// Fails if the first line is not [`HEADER`], or the JSON does not hold a
+/// sheet.
 pub fn from_str(text: &str) -> Result<Sheet, Error> {
     let text = text.trim_start_matches('\u{feff}');
     let (first, body) = text.split_once('\n').unwrap_or((text, ""));
@@ -308,8 +407,15 @@ pub fn from_str(text: &str) -> Result<Sheet, Error> {
     let v = json::parse(body)?;
     // Version 5 has the time tables at the top level, with no wrapper, and is
     // then the same document XDTS has.
+    let file_version = v
+        .get("version")
+        .and_then(|n| n.as_f64())
+        .unwrap_or(0.0)
+        .max(0.0) as u32;
     let Some(sheets) = v.get("timeSheets").and_then(|t| t.as_array()) else {
-        return xdts::from_value(&v);
+        let mut sheet = xdts::from_value(&v)?;
+        sheet.version = file_version;
+        return Ok(sheet);
     };
     let Some(first) = sheets.first() else {
         return Err(Error::Parse("timeSheets is empty".into()));
@@ -318,6 +424,33 @@ pub fn from_str(text: &str) -> Result<Sheet, Error> {
     // first sheet's: this crate has one header per document, and the sheets of
     // a file are the sheets of a cut.
     let mut sheet = xdts::sheet_from_header(first);
+    sheet.version = file_version;
+    if let Some(h) = first.get("header") {
+        sheet.show_head_dummy = h
+            .get("showHeadDummy")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false);
+        if let Some(w) = h.get("workSlip") {
+            sheet.work_slip = work_slip_from_value(w);
+        }
+        // Only when they are not the ones the application always writes, so
+        // that a sheet with the usual colours stays a sheet with no colours
+        // of its own.
+        let colors: Vec<[u8; 3]> = h
+            .get("timeTableFontColors")
+            .and_then(|c| c.as_array())
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|c| {
+                let c = c.as_array()?;
+                let get = |i: usize| c.get(i)?.as_f64().map(|v| v.clamp(0.0, 255.0) as u8);
+                Some([get(0)?, get(1)?, get(2)?])
+            })
+            .collect();
+        if !colors.is_empty() && colors != FONT_COLORS {
+            sheet.font_colors = colors;
+        }
+    }
     for ts in sheets {
         let revisions = ts
             .get("timeTables")

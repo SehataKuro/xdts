@@ -92,6 +92,7 @@ use crate::{
     FIELD_CELL, FIELD_CELL_ALT, FIELD_DIALOG,
 };
 
+/// The first line of every XDTS file, which is how one is recognised.
 pub const HEADER: &str = "exchangeDigitalTimeSheet Save Data";
 
 /// The 2018 version, and all a sheet without camera coordinates needs.
@@ -355,6 +356,8 @@ pub fn header(sheet: &Sheet) -> Value {
         .with("scene", sheet.scene.as_str())
 }
 
+/// The whole document, ready to be written, at the version this sheet
+/// needs.
 pub fn to_value(sheet: &Sheet) -> Value {
     let tables: Vec<Value> = sheet.tables.iter().map(|t| time_table(t, sheet)).collect();
     // The order a saved sheet has: the sheets, the version, and the header
@@ -371,6 +374,7 @@ pub fn to_value(sheet: &Sheet) -> Value {
     v.with("header", header(sheet))
 }
 
+/// The whole file: the header line, then the JSON.
 pub fn to_string(sheet: &Sheet, opts: &WriteOptions) -> String {
     let v = to_value(sheet);
     let body = if opts.pretty {
@@ -594,6 +598,8 @@ pub(crate) fn operator_of(tt: &Value) -> String {
         .unwrap_or_default()
 }
 
+/// Decode a document body. Shared with [`crate::tdts`], whose time tables
+/// have the same shape inside their wrapper.
 pub fn from_value(v: &Value) -> Result<Sheet, Error> {
     let mut sheet = sheet_from_header(v);
     let tables = v
@@ -607,6 +613,11 @@ pub fn from_value(v: &Value) -> Result<Sheet, Error> {
     Ok(sheet)
 }
 
+/// Read an XDTS file, with or without a BOM.
+///
+/// Any version is accepted, including one this crate has not heard of:
+/// the time tables are the same shape. Fails if the first line is not
+/// [`HEADER`], or there are no time tables.
 pub fn from_str(text: &str) -> Result<Sheet, Error> {
     let text = text.trim_start_matches('\u{feff}');
     let (first, body) = text.split_once('\n').unwrap_or((text, ""));

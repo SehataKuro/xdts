@@ -45,7 +45,11 @@ let back = xdts::from_str(&std::fs::read_to_string("cut012.tdts")?)?;
 シートは**変化点の列**です。これは両形式がファイルに持っている形そのもので、あるコマの内容は「直前の変化点が言ったこと」です。
 
 ```rust
-pub struct Sheet      { cut, scene, episode, operator: String, tables: Vec<TimeTable> }
+pub struct Sheet      { cut, scene, episode, operator: String, tables: Vec<TimeTable>,
+                        work_slip: WorkSlip,                     // 作業伝票
+                        show_head_dummy: bool, font_colors: Vec<[u8; 3]>,
+                        version: u32 }                           // 読んだ TDTS の version
+pub struct WorkSlip   { memo: String, processes: Vec<Process>, works: Vec<Work> }
 pub struct TimeTable  { name, duration, columns, tracks,        // セル欄
                         cell_field: u32,                        // セル欄の欄ID（0 か 4）
                         dialogue: Field, camera: Field,         // 台詞欄（3）、カメラワーク欄（5）
@@ -155,7 +159,15 @@ TDTS の version 5 は古い形式で、`timeTables` が直下にあり包みが
 
 セル欄は、新しく作るシートではどちらも `fieldId` 0 です。ただし TDTS には**セル欄が2つ**あります。ある変換実装が欄0を ACTION、欄4を CELL と呼び、両方に値があるとアプリケーションは欄4を優先して表示する、としています。そこで**欄4に何か入っていればそちらから読み**、`cell_field` に覚えて**読んだ欄に書き戻します**。`tests/data/` の実物は欄0にセルがあり欄4は空なので、この挙動は手で組んだファイルでテストしています（公式の根拠はありません）。
 
-TDTS が持っていて XDTS が持たないもの——`episode`、`direction`、`color`、セルの文字色（`fontColorId`）、そしてリビジョン履歴——は、TDTS で読んで TDTS で書くかぎり保たれます。XDTS を経由すると落ちます。
+TDTS が持っていて XDTS が持たないもの——`episode`、`direction`、`color`、セルの文字色（`fontColorId`）、`showHeadDummy`、**作業伝票**（メモ・担当者・枚数）、そしてリビジョン履歴——は、TDTS で読んで TDTS で書くかぎり保たれます。XDTS を経由すると落ちます。
+
+作業伝票は、空であっても**フォーム全体**（3つの `processes`、2つの `works`、各7トラック）を書き出します。モデルが短ければ空で埋めます——フォームが欠けたファイルはこの形式ではないからです。
+
+### version
+
+読み込んだ version を覚えていて、**書き戻すときに同じ番号を書きます**（7以上の場合）。version 7 のファイルを黙って 10 にすると、それを書いたアプリケーションで開けなくなる可能性があるためです。実物の version 7 シートが 10 とキー構成で違うという根拠は無いので、番号だけを尊重します。
+
+version 5 は形が違い（包みが無く `timeTables` が直下）、このクレートは**読めますが書けません**。したがって version 5 のファイルは 10 として書き出されます。これは意図した格上げで、`timeSheets` の包みに `version: 5` と書くのは——このクレートが存在する理由そのものの間違いです。
 
 公開仕様に FPS の属性はありません。
 
