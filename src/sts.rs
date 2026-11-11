@@ -34,10 +34,10 @@
 //! * **Names.** The original application ran on Japanese Windows and remaping
 //!   decodes Shift_JIS; DiTiS writes UTF-8. A name that is valid UTF-8 is
 //!   read as UTF-8 — every ASCII name is both — and anything else as
-//!   Shift_JIS. That decoder knows ASCII, half-width kana, kana, full-width
-//!   letters and digits and the common punctuation, and not kanji, which
-//!   would need the whole JIS X 0208 table in a crate with no dependencies;
-//!   a character it does not know comes back as U+FFFD.
+//!   Shift_JIS, the way Japanese Windows has it (CP932, NEC and IBM
+//!   extensions included). The table is in the crate, generated from
+//!   Python's `cp932` codec by `tools/gen-cp932.py`, so there is still no
+//!   dependency; a code with no character comes back as U+FFFD.
 //!
 //! Names are written as UTF-8, which is what the application still in use
 //! reads.
@@ -62,7 +62,7 @@
 //! nor are a cell's p1 options. A sheet over 255 frames is valid here and in
 //! remaping, and is one DiTiS will not open.
 
-use crate::{Error, Sheet, TimeTable, Track, HYPHEN, NULL_CELL, TICK_1, TICK_2};
+use crate::{cp932, Error, Sheet, TimeTable, Track, HYPHEN, NULL_CELL, TICK_1, TICK_2};
 
 /// The 18 bytes a file starts with: the length 17, then the name.
 pub const SIGNATURE: &[u8; 18] = b"\x11ShiraheiTimeSheet";
@@ -252,8 +252,8 @@ fn decode_name(bytes: &[u8]) -> String {
     }
 }
 
-/// The part of Shift_JIS a column name is likely to use; see the module
-/// documentation.
+/// Shift_JIS as Japanese Windows has it (CP932), by the table in
+/// `cp932.rs`. A byte or pair with no character is U+FFFD.
 fn decode_shift_jis(bytes: &[u8]) -> String {
     let mut out = String::new();
     let mut i = 0;
@@ -268,8 +268,8 @@ fn decode_shift_jis(bytes: &[u8]) -> String {
                 out.push(char::from_u32(0xff61 + (b - 0xa1) as u32).unwrap_or('\u{fffd}'));
                 i += 1;
             }
-            0x81..=0x9f | 0xe0..=0xef if i + 1 < bytes.len() => {
-                out.push(jis_char(b, bytes[i + 1]).unwrap_or('\u{fffd}'));
+            0x81..=0x9f | 0xe0..=0xfc if i + 1 < bytes.len() => {
+                out.push(double_byte(b, bytes[i + 1]).unwrap_or('\u{fffd}'));
                 i += 2;
             }
             _ => {
@@ -281,46 +281,16 @@ fn decode_shift_jis(bytes: &[u8]) -> String {
     out
 }
 
-/// A double-byte Shift_JIS character, by its JIS X 0208 row and cell.
-fn jis_char(lead: u8, trail: u8) -> Option<char> {
-    if !(0x40..=0xfc).contains(&trail) || trail == 0x7f {
+fn double_byte(lead: u8, trail: u8) -> Option<char> {
+    if !(0x40..=0xfc).contains(&trail) {
         return None;
     }
-    let lead = if lead >= 0xe0 { lead - 0x40 } else { lead };
-    let mut row = (lead as u32 - 0x81) * 2 + 1;
-    let cell = if trail >= 0x9f {
-        row += 1;
-        trail as u32 - 0x9e
-    } else if trail >= 0x80 {
-        trail as u32 - 0x40
-    } else {
-        trail as u32 - 0x3f
-    };
-    let code = match (row, cell) {
-        (1, 1) => 0x3000,                   // ideographic space
-        (1, 2) => 0x3001,                   // 、
-        (1, 3) => 0x3002,                   // 。
-        (1, 4) => 0xff0c,                   // ，
-        (1, 5) => 0xff0e,                   // ．
-        (1, 6) => 0x30fb,                   // ・
-        (1, 7) => 0xff1a,                   // ：
-        (1, 9) => 0xff1f,                   // ？
-        (1, 10) => 0xff01,                  // ！
-        (1, 28) => 0x30fc,                  // ー
-        (1, 30) => 0xff0f,                  // ／
-        (1, 42) => 0xff08,                  // （
-        (1, 43) => 0xff09,                  // ）
-        (1, 60) => 0xff0b,                  // ＋
-        (1, 61) => 0xff0d,                  // －
-        (1, 65) => 0xff1d,                  // ＝
-        (3, 16..=25) => 0xff10 + cell - 16, // ０-９
-        (3, 33..=58) => 0xff21 + cell - 33, // Ａ-Ｚ
-        (3, 65..=90) => 0xff41 + cell - 65, // ａ-ｚ
-        (4, 1..=83) => 0x3041 + cell - 1,   // ぁ-ん
-        (5, 1..=86) => 0x30a1 + cell - 1,   // ァ-ヶ
-        _ => return None,
-    };
-    char::from_u32(code)
+    let row = match lead {
+        0x81..=0x9f => lead - 0x81,
+        _ => lead - 0xe0 + 0x1f,
+    } as usize;
+    let code = *cp932::TABLE.get(row * cp932::ROW + (trail - 0x40) as usize)?;
+    (code != 0).then(|| char::from_u32(code as u32)).flatten()
 }
 
 #[cfg(test)]
@@ -328,13 +298,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shift_jis_kana_and_full_width_letters_decode() {
-        // あ ア Ａ １ ー, and a kanji (背) this decoder does not know.
+    fn shift_jis_decodes_as_windows_has_it() {
+        // あ ア Ａ １ ー 背景, and ① from the NEC extension.
         let bytes = [
-            0x82, 0xa0, 0x83, 0x41, 0x82, 0x60, 0x82, 0x50, 0x81, 0x5b, 0x94, 0x77,
+            0x82, 0xa0, 0x83, 0x41, 0x82, 0x60, 0x82, 0x50, 0x81, 0x5b, 0x94, 0x77, 0x8c, 0x69,
+            0x87, 0x40,
         ];
-        assert_eq!(decode_name(&bytes), "あアＡ１ー\u{fffd}");
+        assert_eq!(decode_name(&bytes), "あアＡ１ー背景①");
         assert_eq!(decode_name(&[0xb1, b'A']), "ｱA");
+        // A pair with no character, and a lead byte with nothing after it.
+        assert_eq!(decode_name(&[0x85, 0x40, b'B', 0x88]), "\u{fffd}B\u{fffd}");
     }
 
     #[test]
