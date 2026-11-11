@@ -1,7 +1,8 @@
 //! TDTS — the native format of 東映アニメーション デジタルタイムシート.
 //!
-//! A UTF-8 text file: the fixed header line [`HEADER`] followed by JSON, with
-//! **CRLF** line endings.
+//! A UTF-8 text file: the fixed header line [`HEADER`] followed by JSON,
+//! written with **CRLF** line endings, as the application's own sheets have
+//! them. Reading accepts either, and a BOM.
 //!
 //! ```text
 //! toeiDigitalTimeSheet Save Data
@@ -18,7 +19,7 @@
 //! |---|---|---|
 //! | `version` | 5 | **7** |
 //! | sheets | `timeTables` at the top | wrapped in **`timeSheets`** |
-//! | line endings | LF | **CRLF** |
+//! | line endings written | LF | **CRLF** |
 //! | `data[]` | `id`, `values` | plus **`fontColorId`** |
 //! | `timeTableHeaders` | only the fields written | **every field 0..5** |
 //! | sheet header | `cut`, `scene` | plus `episode`, `showHeaderDummy`, `timeTableFontColors`, `workSlip` |
@@ -217,7 +218,11 @@ pub fn to_string(sheet: &Sheet, opts: &WriteOptions) -> String {
     } else {
         v.to_compact()
     };
-    // Sheets saved by the application are CRLF throughout.
+    // CRLF throughout, as the application's own sheets are. Nothing in
+    // this repository shows that: the fixtures are synthetic and LF, and a
+    // reader accepts either. It is written this way so that a sheet from
+    // here is the same kind of file as one from the application, and the
+    // claim is worth stating plainly enough to be corrected.
     format!("{HEADER}\n{body}\n").replace('\n', "\r\n")
 }
 

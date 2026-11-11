@@ -112,11 +112,13 @@ TDTS には書き出しません。TDTS は別の形式で、東映 DTS がこ�
 |---|---|---|
 | `version` | 5 | **7** |
 | シートの入れ物 | 直下の `timeTables` | **`timeSheets` で包む** |
-| 改行 | LF | **CRLF** |
+| 書き出す改行 | LF | **CRLF** |
 | `data[]` | `id`, `values` | **`fontColorId`** が付く |
 | `timeTableHeaders` | 書いた欄だけ | **0〜5 の全欄** |
 | シートヘッダ | `cut`, `scene` | `episode`, `showHeaderDummy`, `timeTableFontColors`, `workSlip` が付く |
 | タイムテーブル | `duration`, `name`, `fields`, `timeTableHeaders` | `books`, `color`, `direction` が付く |
+
+改行について補足すると、読み込みはどちらの改行も BOM も受け付けます。TDTS を CRLF で書くのは、アプリケーション自身のシートがそうであるという理解に基づくものですが、**このリポジトリの中にその根拠はありません**（`tests/data/` の2つは合成データで、どちらも LF・BOM なしです。NOTICE を参照）。構造の裏付けにはなりますが、改行の裏付けにはなりません。
 
 TDTS の version 5 は古い形式で、`timeTables` が直下にあり包みがありません。`from_str` はどちらも読みます。
 
