@@ -354,3 +354,25 @@ fn a_real_sheet_keeps_its_dialogue_and_camera() {
         assert_eq!(rewritten.tables[0].camera, t.camera);
     }
 }
+
+/// The writer's layout is the applications' layout.
+///
+/// Parsing keeps key order, so re-writing a file the software itself saved
+/// must give that file back byte for byte. This is what catches a writer that
+/// is merely valid JSON: 東映 DTS puts every array element on its own line,
+/// however short the array, and a sheet written any other way is a different
+/// file from the one the application would have written.
+#[test]
+fn rewriting_a_saved_sheet_gives_the_same_bytes() {
+    for (name, pretty) in [("real_v7.tdts", true), ("real_v5.xdts", false)] {
+        let text = fixture(name).replace("\r\n", "\n");
+        let (head, body) = text.split_once('\n').unwrap();
+        let v = json::parse(body).expect("fixture parses");
+        let written = if pretty { v.to_pretty() } else { v.to_compact() };
+        assert_eq!(
+            written.trim_end(),
+            body.trim_end(),
+            "{name} ({head}) is not written back as it was saved"
+        );
+    }
+}
