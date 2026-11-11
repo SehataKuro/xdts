@@ -15,7 +15,9 @@ pub enum Value {
     Null,
     /// `true` or `false`.
     Bool(bool),
-    /// A number. JSON has only the one kind.
+    /// A number. JSON has only the one kind, and so does this: an `f64`, so
+    /// a whole number past 2^53 is rounded, as it is in JavaScript. Nothing in
+    /// a time sheet comes near that.
     Number(f64),
     /// A string, unescaped.
     String(String),
@@ -61,6 +63,16 @@ impl Value {
             Value::Bool(b) => Some(*b),
             _ => None,
         }
+    }
+
+    /// The number if it is a whole number from 0 to `u32::MAX`: what a frame,
+    /// a track number, a count or an id can be. `1.5`, `-1` and `1e30` are
+    /// none of those, and reading them as one — `1e30 as usize` is
+    /// `usize::MAX` — hands the caller a frame count it will loop over for
+    /// ever.
+    pub fn as_index(&self) -> Option<u32> {
+        let n = self.as_f64()?;
+        (n >= 0.0 && n.fract() == 0.0 && n <= u32::MAX as f64).then_some(n as u32)
     }
 
     /// The number if this is one.
@@ -154,12 +166,17 @@ impl From<Vec<Value>> for Value {
     }
 }
 
+/// A number as JSON writes it, and as it reads back: exactly.
+///
+/// A whole number is written without a point. Anything else is written with
+/// Rust's `Display`, which is the shortest decimal that parses back to the
+/// same `f64`; this used to round to four places, so `0.00001` was written
+/// as `0`.
 fn fmt_num(n: f64) -> String {
     if n.fract() == 0.0 && n.abs() < 1e15 {
         format!("{}", n as i64)
     } else {
-        let s = format!("{n:.4}");
-        s.trim_end_matches('0').trim_end_matches('.').to_string()
+        format!("{n}")
     }
 }
 
@@ -264,9 +281,18 @@ fn write_value(out: &mut String, v: &Value, depth: usize, pretty: Option<usize>)
     }
 }
 
+/// How deep objects and arrays may nest before a document is refused.
+///
+/// A sheet nests about ten deep. Without a limit, a file of a few thousand
+/// `[` runs the recursive descent out of stack, and that is an abort, not an
+/// error a caller can handle: one bad file would take down whatever read it.
+/// 128 is serde_json's limit too, so the two refuse the same files.
+pub const MAX_DEPTH: usize = 128;
+
 struct Parser<'a> {
     s: &'a [u8],
     i: usize,
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -274,15 +300,21 @@ impl<'a> Parser<'a> {
         Err(Error::Parse(format!("{msg} at byte {}", self.i)))
     }
 
+    fn peek(&self) -> Option<u8> {
+        self.s.get(self.i).copied()
+    }
+
+    /// JSON's whitespace is these four and nothing else; Rust's
+    /// `is_ascii_whitespace` also counts form feed.
     fn ws(&mut self) {
-        while self.i < self.s.len() && self.s[self.i].is_ascii_whitespace() {
+        while matches!(self.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
             self.i += 1;
         }
     }
 
     fn eat(&mut self, c: u8) -> Result<(), Error> {
         self.ws();
-        if self.s.get(self.i) == Some(&c) {
+        if self.peek() == Some(c) {
             self.i += 1;
             Ok(())
         } else {
@@ -290,16 +322,35 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn literal(&mut self, word: &[u8], v: Value) -> Result<Value, Error> {
+        if self.s[self.i..].starts_with(word) {
+            self.i += word.len();
+            Ok(v)
+        } else {
+            self.err("unexpected character")
+        }
+    }
+
+    fn enter(&mut self) -> Result<(), Error> {
+        self.depth += 1;
+        if self.depth >= MAX_DEPTH {
+            return self.err("nested too deep");
+        }
+        Ok(())
+    }
+
     fn value(&mut self) -> Result<Value, Error> {
         self.ws();
-        match self.s.get(self.i) {
+        match self.peek() {
             None => self.err("unexpected end"),
             Some(b'{') => {
+                self.enter()?;
                 self.i += 1;
-                let mut m = Vec::new();
+                let mut m: Vec<(String, Value)> = Vec::new();
                 self.ws();
-                if self.s.get(self.i) == Some(&b'}') {
+                if self.peek() == Some(b'}') {
                     self.i += 1;
+                    self.depth -= 1;
                     return Ok(Value::Object(m));
                 }
                 loop {
@@ -307,12 +358,18 @@ impl<'a> Parser<'a> {
                     let k = self.string()?;
                     self.eat(b':')?;
                     let v = self.value()?;
-                    m.push((k, v));
+                    // A repeated key takes the later value, in the first
+                    // one's place, as serde_json and most readers do.
+                    match m.iter_mut().find(|(key, _)| *key == k) {
+                        Some(slot) => slot.1 = v,
+                        None => m.push((k, v)),
+                    }
                     self.ws();
-                    match self.s.get(self.i) {
+                    match self.peek() {
                         Some(b',') => self.i += 1,
                         Some(b'}') => {
                             self.i += 1;
+                            self.depth -= 1;
                             return Ok(Value::Object(m));
                         }
                         _ => return self.err("expected ',' or '}'"),
@@ -320,20 +377,23 @@ impl<'a> Parser<'a> {
                 }
             }
             Some(b'[') => {
+                self.enter()?;
                 self.i += 1;
                 let mut a = Vec::new();
                 self.ws();
-                if self.s.get(self.i) == Some(&b']') {
+                if self.peek() == Some(b']') {
                     self.i += 1;
+                    self.depth -= 1;
                     return Ok(Value::Array(a));
                 }
                 loop {
                     a.push(self.value()?);
                     self.ws();
-                    match self.s.get(self.i) {
+                    match self.peek() {
                         Some(b',') => self.i += 1,
                         Some(b']') => {
                             self.i += 1;
+                            self.depth -= 1;
                             return Ok(Value::Array(a));
                         }
                         _ => return self.err("expected ',' or ']'"),
@@ -341,103 +401,161 @@ impl<'a> Parser<'a> {
                 }
             }
             Some(b'"') => Ok(Value::String(self.string()?)),
-            Some(b't') if self.s[self.i..].starts_with(b"true") => {
-                self.i += 4;
-                Ok(Value::Bool(true))
+            Some(b't') => self.literal(b"true", Value::Bool(true)),
+            Some(b'f') => self.literal(b"false", Value::Bool(false)),
+            Some(b'n') => self.literal(b"null", Value::Null),
+            Some(b'-' | b'0'..=b'9') => self.number(),
+            Some(_) => self.err("unexpected character"),
+        }
+    }
+
+    /// `-? (0 | [1-9][0-9]*) (\.[0-9]+)? ([eE][+-]?[0-9]+)?`, which is all
+    /// RFC 8259 allows: no `+1`, no `01`, no `.5`, no `1.`.
+    fn number(&mut self) -> Result<Value, Error> {
+        fn digits(p: &mut Parser) -> bool {
+            let from = p.i;
+            while matches!(p.peek(), Some(b'0'..=b'9')) {
+                p.i += 1;
             }
-            Some(b'f') if self.s[self.i..].starts_with(b"false") => {
-                self.i += 5;
-                Ok(Value::Bool(false))
+            p.i > from
+        }
+        let st = self.i;
+        if self.peek() == Some(b'-') {
+            self.i += 1;
+        }
+        match self.peek() {
+            Some(b'0') => self.i += 1,
+            Some(b'1'..=b'9') => {
+                digits(self);
             }
-            Some(b'n') if self.s[self.i..].starts_with(b"null") => {
-                self.i += 4;
-                Ok(Value::Null)
+            _ => return self.err("bad number"),
+        }
+        if self.peek() == Some(b'.') {
+            self.i += 1;
+            if !digits(self) {
+                return self.err("bad number");
             }
-            Some(_) => {
-                let st = self.i;
-                while self.i < self.s.len()
-                    && matches!(
-                        self.s[self.i],
-                        b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9'
-                    )
-                {
-                    self.i += 1;
-                }
-                let t = std::str::from_utf8(&self.s[st..self.i]).unwrap_or("");
-                t.parse::<f64>()
-                    .map(Value::Number)
-                    .or_else(|_| self.err("bad number"))
+        }
+        if matches!(self.peek(), Some(b'e' | b'E')) {
+            self.i += 1;
+            if matches!(self.peek(), Some(b'+' | b'-')) {
+                self.i += 1;
             }
+            if !digits(self) {
+                return self.err("bad number");
+            }
+        }
+        let t = std::str::from_utf8(&self.s[st..self.i]).unwrap_or("");
+        match t.parse::<f64>() {
+            // `1e400` is a valid JSON number and not a valid f64: refuse it
+            // rather than hold an infinity no JSON writer can write.
+            Ok(n) if n.is_finite() => Ok(Value::Number(n)),
+            Ok(_) => self.err("number out of range"),
+            Err(_) => self.err("bad number"),
         }
     }
 
     fn string(&mut self) -> Result<String, Error> {
         self.ws();
-        if self.s.get(self.i) != Some(&b'"') {
+        if self.peek() != Some(b'"') {
             return self.err("expected string");
         }
         self.i += 1;
-        let mut buf: Vec<u8> = Vec::new();
+        let mut out = String::new();
         loop {
-            let c = match self.s.get(self.i) {
-                Some(&c) => c,
+            // The input is a &str, so a run of plain bytes is valid UTF-8 as
+            // it stands: copy it whole, up to the next quote, backslash or
+            // control character.
+            let from = self.i;
+            while let Some(c) = self.peek() {
+                if c == b'"' || c == b'\\' || c < 0x20 {
+                    break;
+                }
+                self.i += 1;
+            }
+            out.push_str(std::str::from_utf8(&self.s[from..self.i]).unwrap_or(""));
+            match self.peek() {
                 None => return self.err("unterminated string"),
-            };
-            self.i += 1;
-            match c {
-                b'"' => break,
-                b'\\' => {
-                    let e = *self
-                        .s
-                        .get(self.i)
-                        .ok_or(Error::Parse("bad escape".into()))?;
+                Some(b'"') => {
+                    self.i += 1;
+                    return Ok(out);
+                }
+                Some(b'\\') => {
+                    self.i += 1;
+                    let Some(e) = self.peek() else {
+                        return self.err("unterminated string");
+                    };
                     self.i += 1;
                     match e {
-                        b'n' => buf.push(b'\n'),
-                        b't' => buf.push(b'\t'),
-                        b'r' => buf.push(b'\r'),
-                        b'b' => buf.push(8),
-                        b'f' => buf.push(12),
-                        b'u' => {
-                            let mut cp = self.hex4()?;
-                            if (0xd800..0xdc00).contains(&cp)
-                                && self.s.get(self.i) == Some(&b'\\')
-                                && self.s.get(self.i + 1) == Some(&b'u')
-                            {
-                                self.i += 2;
-                                let lo = self.hex4()?;
-                                cp = 0x10000 + ((cp - 0xd800) << 10) + (lo.wrapping_sub(0xdc00));
-                            }
-                            let ch = char::from_u32(cp).unwrap_or('\u{fffd}');
-                            let mut tmp = [0u8; 4];
-                            buf.extend_from_slice(ch.encode_utf8(&mut tmp).as_bytes());
-                        }
-                        other => buf.push(other),
+                        b'"' => out.push('"'),
+                        b'\\' => out.push('\\'),
+                        b'/' => out.push('/'),
+                        b'b' => out.push('\u{8}'),
+                        b'f' => out.push('\u{c}'),
+                        b'n' => out.push('\n'),
+                        b'r' => out.push('\r'),
+                        b't' => out.push('\t'),
+                        b'u' => out.push(self.unicode()?),
+                        _ => return self.err("bad escape"),
                     }
                 }
-                c => buf.push(c),
+                Some(_) => return self.err("control character in string"),
             }
         }
-        String::from_utf8(buf).or_else(|_| self.err("invalid utf-8"))
     }
 
+    /// The character after `\u`, which takes a second `\u` when it is the
+    /// first half of a surrogate pair. A half on its own is not a character,
+    /// and is refused rather than turned into U+FFFD — or, worse, combined
+    /// with whatever escape follows it, which used to swallow that one too.
+    fn unicode(&mut self) -> Result<char, Error> {
+        let hi = self.hex4()?;
+        match hi {
+            0xd800..=0xdbff => {
+                if self.s.get(self.i..self.i + 2) != Some(b"\\u".as_slice()) {
+                    return self.err("lone surrogate");
+                }
+                self.i += 2;
+                let lo = self.hex4()?;
+                if !(0xdc00..=0xdfff).contains(&lo) {
+                    return self.err("lone surrogate");
+                }
+                let cp = 0x10000 + ((hi - 0xd800) << 10) + (lo - 0xdc00);
+                match char::from_u32(cp) {
+                    Some(c) => Ok(c),
+                    None => self.err("bad \\u escape"),
+                }
+            }
+            0xdc00..=0xdfff => self.err("lone surrogate"),
+            _ => match char::from_u32(hi) {
+                Some(c) => Ok(c),
+                None => self.err("bad \\u escape"),
+            },
+        }
+    }
+
+    /// Exactly four hex digits. `from_str_radix` on its own takes `+1ab`.
     fn hex4(&mut self) -> Result<u32, Error> {
-        let h = self
-            .s
-            .get(self.i..self.i + 4)
-            .ok_or(Error::Parse("bad \\u".into()))?;
+        let h = match self.s.get(self.i..self.i + 4) {
+            Some(h) if h.iter().all(u8::is_ascii_hexdigit) => h,
+            _ => return self.err("bad \\u escape"),
+        };
         self.i += 4;
-        u32::from_str_radix(std::str::from_utf8(h).unwrap_or("x"), 16)
-            .map_err(|_| Error::Parse("bad \\u escape".into()))
+        Ok(h.iter()
+            .fold(0, |n, &c| n * 16 + (c as char).to_digit(16).unwrap_or(0)))
     }
 }
 
 /// Read one JSON document, keeping the order of every object's keys.
+///
+/// Strict to RFC 8259, with two allowances for the files this crate reads: a
+/// leading BOM is skipped, and nesting is limited to [`MAX_DEPTH`].
 pub fn parse(text: &str) -> Result<Value, Error> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut p = Parser {
         s: text.as_bytes(),
         i: 0,
+        depth: 0,
     };
     let v = p.value()?;
     p.ws();

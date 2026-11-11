@@ -15,3 +15,10 @@ categories = ["parser-implementations", "multimedia"]
 # flags to decide between.
 
 [dependencies]
+
+# Used only by tests/json_oracle.rs, which checks the in-tree parser and
+# writer against it on thousands of documents. A test dependency is never
+# built for anything that depends on this crate, so the line above still
+# holds for every user of it.
+[dev-dependencies]
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }

@@ -190,9 +190,8 @@ fn work_slip_from_value(v: &Value) -> WorkSlip {
                         artist: text(t, "artist"),
                         sheets: t
                             .get("numberOfSheets")
-                            .and_then(|n| n.as_f64())
-                            .unwrap_or(0.0)
-                            .max(0.0) as u32,
+                            .and_then(|n| n.as_index())
+                            .unwrap_or(0),
                     })
                     .collect(),
             })
@@ -407,11 +406,7 @@ pub fn from_str(text: &str) -> Result<Sheet, Error> {
     let v = json::parse(body)?;
     // Version 5 has the time tables at the top level, with no wrapper, and is
     // then the same document XDTS has.
-    let file_version = v
-        .get("version")
-        .and_then(|n| n.as_f64())
-        .unwrap_or(0.0)
-        .max(0.0) as u32;
+    let file_version = v.get("version").and_then(|n| n.as_index()).unwrap_or(0);
     let Some(sheets) = v.get("timeSheets").and_then(|t| t.as_array()) else {
         let mut sheet = xdts::from_value(&v)?;
         sheet.version = file_version;
@@ -436,18 +431,21 @@ pub fn from_str(text: &str) -> Result<Sheet, Error> {
         // Only when they are not the ones the application always writes, so
         // that a sheet with the usual colours stays a sheet with no colours
         // of its own.
-        let colors: Vec<[u8; 3]> = h
+        // All or nothing: a cell's colour is an index into this list, so
+        // dropping one entry that does not read would quietly recolour every
+        // cell after it.
+        let colors: Option<Vec<[u8; 3]>> = h
             .get("timeTableFontColors")
             .and_then(|c| c.as_array())
             .unwrap_or(&[])
             .iter()
-            .filter_map(|c| {
+            .map(|c| {
                 let c = c.as_array()?;
-                let get = |i: usize| c.get(i)?.as_f64().map(|v| v.clamp(0.0, 255.0) as u8);
+                let get = |i: usize| u8::try_from(c.get(i)?.as_index()?).ok();
                 Some([get(0)?, get(1)?, get(2)?])
             })
             .collect();
-        if !colors.is_empty() && colors != FONT_COLORS {
+        if let Some(colors) = colors.filter(|c| !c.is_empty() && c[..] != FONT_COLORS) {
             sheet.font_colors = colors;
         }
     }

@@ -957,3 +957,35 @@ fn a_version_5_tdts_comes_back_as_10() {
     assert!(text.contains("\"version\": 10"), "a wrapper was labelled 5");
     assert!(text.contains("\"timeSheets\": ["));
 }
+
+/// A frame is a whole number from zero up, and a number that is not one is
+/// not read as one. `1e30 as usize` is `usize::MAX`: a duration like that,
+/// handed back as a real one, is a loop that does not end in whoever reads
+/// the sheet next.
+#[test]
+fn a_number_that_cannot_be_a_frame_is_not_one() {
+    let text = format!(
+        "{}\n{}",
+        x::HEADER,
+        r#"{"timeTables":[{"duration":1e30,"fields":[{"tracks":[{"trackNo":0,"frames":[
+            {"data":[{"id":0,"values":["1"]}],"frame":0},
+            {"data":[{"id":0,"values":["2"]}],"frame":1.5},
+            {"data":[{"id":0,"values":["3"]}],"frame":-1},
+            {"data":[{"id":0,"values":["4"]}],"frame":1e30},
+            {"data":[{"id":0,"values":["5"]}],"frame":6}
+        ]}],"fieldId":0}],"name":"a","timeTableHeaders":[{"names":["A"],"fieldId":0}]}],"version":5}"#
+    );
+    let s = x::from_str(&text).unwrap();
+    let t = &s.tables[0];
+    // The three that are not frames are gone; the two that are, are there.
+    assert_eq!(
+        t.tracks[0]
+            .frames
+            .iter()
+            .map(|(f, _)| *f)
+            .collect::<Vec<_>>(),
+        [0, 6]
+    );
+    // And the duration that is not one falls back to the last real frame.
+    assert_eq!(t.duration, 6);
+}

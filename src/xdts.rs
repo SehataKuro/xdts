@@ -424,16 +424,15 @@ fn tracks_of(tt: &Value, id: u32) -> (Vec<Column>, usize) {
         {
             let no = tr
                 .get("trackNo")
-                .and_then(|n| n.as_f64())
-                .unwrap_or(decoded.len() as f64) as usize;
+                .and_then(|n| n.as_index())
+                .map_or(decoded.len(), |n| n as usize);
             let mut frames = Vec::new();
             for fr in tr.get("frames").and_then(|f| f.as_array()).unwrap_or(&[]) {
-                let Some(f) = fr.get("frame").and_then(|f| f.as_f64()) else {
+                // A frame that is not a whole number from zero up is not a
+                // frame, and the entry is skipped rather than guessed at.
+                let Some(f) = fr.get("frame").and_then(|f| f.as_index()) else {
                     continue;
                 };
-                if f < 0.0 {
-                    continue;
-                }
                 let f = f as usize;
                 let data = fr
                     .get("data")
@@ -441,9 +440,8 @@ fn tracks_of(tt: &Value, id: u32) -> (Vec<Column>, usize) {
                     .and_then(|d| d.first());
                 let font_color = data
                     .and_then(|d| d.get("fontColorId"))
-                    .and_then(|c| c.as_f64())
-                    .unwrap_or(0.0)
-                    .max(0.0) as u32;
+                    .and_then(|c| c.as_index())
+                    .unwrap_or(0);
                 let strings = |key: &str| -> Vec<String> {
                     data.and_then(|d| d.get(key))
                         .and_then(|v| v.as_array())
@@ -518,9 +516,9 @@ fn cells_from_value(tt: &Value, id: u32) -> (Vec<Track>, usize) {
     (tracks, max_frame)
 }
 
-/// A count that cannot be negative.
+/// A count: a whole number from zero up, or nothing.
 fn count(tt: &Value, key: &str) -> usize {
-    tt.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0).max(0.0) as usize
+    tt.get(key).and_then(|v| v.as_index()).unwrap_or(0) as usize
 }
 
 /// Decode one `timeTables[]` entry, all three fields of it.
@@ -530,7 +528,7 @@ fn count(tt: &Value, key: &str) -> usize {
 /// camerawork keep the whole list the file gave, which for camerawork in a
 /// version 10 file is the camera position as well as the direction.
 pub fn time_table_from_value(tt: &Value) -> TimeTable {
-    let duration = tt.get("duration").and_then(|d| d.as_f64()).unwrap_or(0.0) as usize;
+    let duration = tt.get("duration").and_then(|d| d.as_index()).unwrap_or(0) as usize;
     // TDTS has two cell columns and shows the other one where it has
     // anything in it. XDTS files have no field 4, so this costs them a look
     // that finds nothing.
@@ -564,11 +562,7 @@ pub fn time_table_from_value(tt: &Value) -> TimeTable {
         revisions: Vec::new(),
         // TDTS keys, read here because both formats' time tables are decoded
         // by this one function. XDTS has none of them and simply has none.
-        color: tt
-            .get("color")
-            .and_then(|c| c.as_f64())
-            .unwrap_or(0.0)
-            .max(0.0) as u32,
+        color: tt.get("color").and_then(|c| c.as_index()).unwrap_or(0),
         direction: tt.get("direction").map(|d| d.to_text()).unwrap_or_default(),
         head_dummy: count(tt, "headDummykomas"),
         foot_dummy: count(tt, "footDummykomas"),
