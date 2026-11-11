@@ -7,3 +7,4 @@
 tests/data/*.tdts -text
 tests/data/*.xdts -text
 tests/data/*.tnz -text
+tests/data/*.ditis -text

@@ -2,7 +2,15 @@
 
 ## 未リリース
 
+`Format` に値を足したので、次は **0.2.0** です。
+
+### 互換性のない変更
+
+- `Format` に `Ditis` を追加し、`#[non_exhaustive]` を付けました。`Format` を `match` している場合は `_` の腕が必要です
+
 ### 追加
+
+- **DiTiS** の独自形式（`.ditis` / `.json`）の読み書き：`ditis::from_str` / `ditis::to_string`。モデルに無いもの（FPS、挿入・無効行、取り込み元の文書など）も保って書き戻し、DiTiS が書いた新規シートはバイト単位で往復します
 
 - **STS**（シラヘイタイムシート、DiTiS）の読み書き：`sts::from_bytes` / `sts::to_bytes`。DiTiS が書くファイルとはバイト単位で往復し、元のアプリの読み方（256 コマ以上、Shift_JIS の列名）も読めます
 - **TNZ**（OpenToonz / Tahoma2D のシーン）の読み込み：`tnz::from_str` / `tnz::from_bytes`。OpenToonz 自身の XDTS 書き出しと同じ解釈でセル欄を取り出します

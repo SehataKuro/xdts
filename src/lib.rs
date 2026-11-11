@@ -1,4 +1,4 @@
-//! Read and write animation exposure sheets in the XDTS, TDTS and STS
+//! Read and write animation exposure sheets in the XDTS, TDTS, STS and DiTiS
 //! formats, and read them out of OpenToonz scenes, with no dependencies.
 //!
 //! * **XDTS** — "eXchange Digital Time Sheet" (CELSYS with 東映アニメーション,
@@ -9,6 +9,8 @@
 //!   see [`tdts`].
 //! * **STS** — the binary sheet of シラヘイタイムシート, read and written by
 //!   DiTiS today. Drawing numbers only: see [`sts`].
+//! * **DiTiS** — DiTiS's own file, read and written with everything it
+//!   holds that this crate does not model kept as it was: see [`ditis`].
 //! * **TNZ** — an OpenToonz or Tahoma2D scene, read (not written) for its
 //!   cell columns the way OpenToonz's own XDTS export reads them: see
 //!   [`tnz`].
@@ -80,6 +82,7 @@
 
 use std::fmt;
 
+pub mod ditis;
 pub mod json;
 pub mod sts;
 pub mod tdts;
@@ -415,17 +418,21 @@ pub struct TimeTable {
 /// back only into the format they were read from; see [`Sheet::read_from`].
 pub type Extra = Vec<(String, json::Value)>;
 
-/// Which of the two JSON formats a sheet was read from.
+/// Which of the JSON formats a sheet was read from.
 ///
 /// STS and TNZ sheets are read with nothing this crate does not model kept
 /// beside them, so there is nothing to tie to a format and a sheet read from
-/// either has no `read_from`.
+/// either has no `read_from`. More formats may be added without that being a
+/// breaking change, so a `match` on it needs a `_` arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Format {
     /// XDTS.
     Xdts,
     /// TDTS.
     Tdts,
+    /// DiTiS's own file.
+    Ditis,
 }
 
 /// One of the work slip's rows of names: who did a process, and in what
@@ -553,8 +560,8 @@ impl Default for WriteOptions {
     }
 }
 
-/// Read a sheet from text in any of the text formats — XDTS, TDTS, or an
-/// OpenToonz scene — by how it starts.
+/// Read a sheet from text in any of the text formats — XDTS, TDTS, a DiTiS
+/// file or an OpenToonz scene — by how it starts.
 pub fn from_str(text: &str) -> Result<Sheet, Error> {
     let trimmed = text.trim_start_matches('\u{feff}');
     let first = trimmed.split_once('\n').map(|(a, _)| a).unwrap_or(trimmed);
@@ -562,6 +569,7 @@ pub fn from_str(text: &str) -> Result<Sheet, Error> {
         xdts::HEADER => xdts::from_str(text),
         tdts::HEADER => tdts::from_str(text),
         _ if tnz::is_tnz(trimmed) => tnz::from_str(text),
+        _ if ditis::is_ditis(trimmed) => ditis::from_str(text),
         other => Err(Error::Parse(format!(
             "not a time sheet: first line is {other:?}"
         ))),

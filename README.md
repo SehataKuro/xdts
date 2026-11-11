@@ -5,9 +5,10 @@
 - **XDTS**（eXchange Digital Time Sheet、セルシス＋東映アニメーション、2018）— CLIP STUDIO PAINT や OpenToonz が読み書きする交換用形式。version 5（2018-11-29）と version 10（2022-12-06）の両方に対応
 - **TDTS** — 東映アニメーション デジタルタイムシートのネイティブ形式。XDTS に似ていますが**同じではありません**
 - **STS** — シラヘイタイムシートのバイナリ形式。今は DiTiS が読み書きしています（[STS](#sts)）
+- **DiTiS** — DiTiS の独自形式（`.ditis` / `.json`）。セル欄を読み書きし、このクレートがモデルに持たないもの（FPS、挿入・無効行、取り込み元の XDTS / TDTS など）も**そのまま保って書き戻します**（[DiTiS](#ditis)）
 - **TNZ** — OpenToonz / Tahoma2D のシーンファイル。**読み込みのみ**で、OpenToonz 自身の XDTS 書き出しと同じ解釈でセル欄を取り出します（[OpenToonz のシーン](#opentoonz-のシーンtnz)）
 
-形式が分からないファイルは `xdts::from_bytes` に渡せば、先頭で判別して読みます。
+形式が分からないファイルは `xdts::from_bytes` に渡せば、中身の先頭で判別して読みます（拡張子は見ません）。
 
 ```toml
 [dependencies]
@@ -226,6 +227,26 @@ version 5 は形が違い（包みが無く `timeTables` が直下）、この�
 - **列名**：元のアプリは日本語 Windows のもので remaping は Shift_JIS、DiTiS は UTF-8。**UTF-8 として正しければ UTF-8**（ASCII の名前はどちらとしても同じ）、そうでなければ Shift_JIS として読みます。依存ゼロのため Shift_JIS は ASCII・半角カナ・かな・全角英数・主な記号までで、**漢字は U+FFFD** になります。書き出しは UTF-8 です
 
 STS が持てるのは**1シート分の動画番号だけ**です（1〜65535 または空）。カット番号・FPS・台詞・カメラ・中割記号・文字付きの番号はありません。そのため `sts::to_bytes` は、書けないものを別の値に置き換えずに `Error::Unsupported` で断ります——タイムテーブルが1つでないシート、`a0001`・`1a`・`0` のような番号、256 列以上、255 バイトを超える列名、65535 コマを超えるシートです。`SYMBOL_HYPHEN` と中割記号 ○● は OpenToonz の読み方と同じく直前の番号を続け、記号そのものは残りません。256 コマ以上のシートはここと remaping では正しいファイルですが、DiTiS では開けません。
+
+## DiTiS
+
+DiTiS の独自形式は、ヘッダ行のない JSON です（DiTiS の `buildDitisJson` / `loadSheetData`）。
+
+```json
+{ "version": "1.0",
+  "sheets": [{ "name": "Sheet1", "fps": 24, "layers": ["A", "B"], "frames": 144,
+               "framePageSize": 144, "data": [["1", "1", "2"]],
+               "insertedFrames": [], "disabledFrames": [] }] }
+```
+
+交換形式と違い、**列はコマごとの値を全部持ちます**（`"1", "1", "2"` は1が2コマ、次に2）。列は最後の値で、列の並びは最後の空でない列で切れます。値は DiTiS 独自のもので、絵の番号、`×`（明示した空）、`○` `●`（中割）、`""`（何もない）、古い版が「前のコマと同じ」の意味で書いていた `-` です。`layers` が `{id, name}` で `data` がコマ・列 ID で引く形の古いファイルも読みます。
+
+- **読み込み**は DiTiS 自身の XDTS 書き出し（`buildTimesheetTable`）と同じく変化点に直します。`×` と `""` はどちらも `SYMBOL_NULL_CELL`、`○` `●` は `SYMBOL_TICK_1` / `SYMBOL_TICK_2`、`-` は `SYMBOL_HYPHEN` です
+- **書き出し**は DiTiS の取り込み（`importExchangeTimesheet`）と同じく、各値を次の変化まで埋めます（空は `×`、`SYMBOL_HYPHEN` は続けている番号）。ただし列の**末尾の空は書きません**。DiTiS 自身がそう保存するので、読んで書き戻しても同じシートになります
+- **モデルに無いもの**——FPS、ページの長さ、挿入・無効行、メモ、そして `timesheetSource`（取り込み元の XDTS / TDTS 文書。DiTiS が編集できない台詞・カメラ・色はここに残っています）——は `TimeTable::extra` と `Sheet::extra` に読んだまま保ち、**DiTiS の形式にだけ**書き戻します。DiTiS 以外から来たシートは、新規の DiTiS シートと同じもの（24fps、1ページ、挿入・無効行なし）を付けて書きます
+- DiTiS が持つのはセル欄だけなので、シートの台詞欄・カメラ欄と p1 の印は書きません
+
+**DiTiS のコードそのものを Node で動かして**確かめています。DiTiS が書いた新規シートはバイト単位で同じに戻り、XDTS に書き出した変化点も DiTiS 自身の書き出しと一致します。XDTS から取り込んだシートは、`frames` キーの位置と、列の末尾まで埋められた `×` が空になる点だけが違います（DiTiS にとっては同じシートです）。`tests/data/ditis_*.ditis` はこのとき DiTiS のコードが書いたファイルです。
 
 ## OpenToonz のシーン（TNZ）
 
