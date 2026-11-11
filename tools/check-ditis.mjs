@@ -173,13 +173,10 @@ check("DiTiS: the changes this crate reads are the ones DiTiS's own XDTS export 
 });
 
 const csp = path.join(repo, 'tests', 'data', 'csp_v5.xdts');
-check('DiTiS: a sheet DiTiS imported from XDTS keeps its cells and its source', () => {
+check('DiTiS: a sheet DiTiS imported from XDTS comes back byte for byte', () => {
     fs.writeFileSync(at('imported.ditis'), buildDitisJson(importXdts(csp)[0]));
     convert(at('imported.ditis'), at('imported.out.ditis'));
-    const [a] = loadDitis(at('imported.ditis'));
-    const [b] = loadDitis(at('imported.out.ditis'));
-    if (!same(view(a), view(b))) return 'the cells differ';
-    if (!same(a.timesheetSource, b.timesheetSource)) return 'timesheetSource differs';
+    if (!bytes(at('imported.ditis')).equals(bytes(at('imported.out.ditis')))) return 'the bytes differ';
 });
 check('DiTiS: a .ditis this crate writes from XDTS opens as that sheet', () => {
     convert(csp, at('csp.ditis'));

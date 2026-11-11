@@ -44,11 +44,21 @@ fn a_new_sheet_reads_as_its_changes_and_writes_back_byte_for_byte() {
     assert_eq!(values(&t.tracks[1]), [(0, "5")]);
     assert!(t.tracks[2].frames.is_empty());
 
-    // fps, the page size, the inserted and disabled rows: kept.
+    // fps, the page size, the inserted and disabled rows: kept, in the
+    // file's order, with the keys the model has in their places.
     let keys: Vec<_> = t.extra.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(
         keys,
-        ["fps", "framePageSize", "insertedFrames", "disabledFrames"]
+        [
+            "name",
+            "fps",
+            "layers",
+            "frames",
+            "framePageSize",
+            "data",
+            "insertedFrames",
+            "disabledFrames"
+        ]
     );
 
     assert_eq!(ditis::to_string(&s, &WriteOptions::default()), NEW);
@@ -56,7 +66,7 @@ fn a_new_sheet_reads_as_its_changes_and_writes_back_byte_for_byte() {
 }
 
 #[test]
-fn an_imported_sheet_keeps_its_source_document() {
+fn an_imported_sheet_writes_back_byte_for_byte() {
     let s = ditis::from_str(IMPORTED).unwrap();
     let t = &s.tables[0];
     assert_eq!(t.duration, 48);
@@ -64,24 +74,33 @@ fn an_imported_sheet_keeps_its_source_document() {
         values(&t.tracks[0]),
         [(0, "1"), (6, "2"), (12, "3"), (24, "4")]
     );
+    // DiTiS filled this column with × to the end: it is empty, and it is
+    // written back as the × it was.
+    assert!(t.tracks[1].frames.is_empty());
     assert!(t.extra.iter().any(|(k, _)| k == "timesheetSource"));
 
-    // Written again and read again, it is the same sheet: DiTiS's source
-    // document and all. What differs on the page is where `frames` sits,
-    // and a column DiTiS filled with × to the end coming back empty.
-    let again = ditis::from_str(&ditis::to_string(&s, &WriteOptions::default())).unwrap();
-    let column = |s: &Sheet, c: usize| {
-        let t = &s.tables[0];
-        (0..t.duration)
-            .map(|f| t.tracks[c].value_at(f).filter(|v| *v != NULL_CELL))
-            .map(|v| v.map(str::to_string))
+    // `frames` where DiTiS put it, and its × as they were.
+    assert_eq!(ditis::to_string(&s, &WriteOptions::default()), IMPORTED);
+}
+
+#[test]
+fn a_changed_cell_writes_data_from_the_model() {
+    let mut s = ditis::from_str(NEW).unwrap();
+    s.tables[0].tracks[1].frames = vec![(0, "7".into()), (6, NULL_CELL.into())];
+    s.tables[0].name = "renamed".into();
+    let text = ditis::to_string(&s, &WriteOptions::default());
+    let back = ditis::from_str(&text).unwrap();
+    assert_eq!(back.tables[0].name, "renamed");
+    assert_eq!(back.tables[0].tracks, s.tables[0].tracks);
+    // The rest of the sheet is as it was, keys and order and all.
+    let keys = |s: &Sheet| {
+        s.tables[0]
+            .extra
+            .iter()
+            .map(|(k, _)| k.clone())
             .collect::<Vec<_>>()
     };
-    for c in 0..t.columns.len() {
-        assert_eq!(column(&again, c), column(&s, c), "column {c}");
-    }
-    assert_eq!(again.tables[0].extra, t.extra);
-    assert_eq!(again.extra, s.extra);
+    assert_eq!(keys(&back), keys(&s));
 }
 
 #[test]
