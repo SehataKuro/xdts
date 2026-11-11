@@ -77,6 +77,12 @@ pub mod json;
 pub mod tdts;
 pub mod xdts;
 
+// The README's examples are compiled and run with the tests, so that the page
+// people read on crates.io cannot drift away from the API it describes.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 /// × — the cell is empty from here.
 pub const NULL_CELL: &str = "SYMBOL_NULL_CELL";
 /// ○ — an in-between mark.
@@ -113,8 +119,12 @@ pub const OPTION_KEYFRAME: &str = "OPTION_KEYFRAME";
 /// [`xdts::SUBVERSION_P1`].
 pub const OPTION_REFERENCEFRAME: &str = "OPTION_REFERENCEFRAME";
 
-#[derive(Debug)]
 /// What can go wrong reading a sheet.
+///
+/// More kinds may be added without that being a breaking change, so a
+/// `match` on it needs a `_` arm.
+#[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// The text is not a sheet of this format.
     Parse(String),

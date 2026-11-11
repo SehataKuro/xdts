@@ -9,6 +9,10 @@ readme = "README.md"
 repository = "https://github.com/SehataKuro/xdts"
 keywords = ["animation", "timesheet", "xdts", "tdts", "exposure-sheet"]
 categories = ["parser-implementations", "multimedia"]
+# What is here for the repository and not for anyone using the crate. The
+# tests and their fixtures do ship, so that `cargo test` works from the
+# package, and NOTICE says where each fixture came from.
+exclude = [".github/", ".gitattributes", ".gitignore"]
 
 # Both formats are plain JSON behind a header line, and the JSON writer and
 # parser are in-tree, so this crate has no dependencies at all and no feature

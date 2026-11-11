@@ -7,44 +7,50 @@
 
 ```toml
 [dependencies]
-xdts = { git = "https://github.com/SehataKuro/xdts" }
+xdts = "0.1"
 ```
+
+API ドキュメントは [docs.rs/xdts](https://docs.rs/xdts) にあります。
 
 ## 使い方
 
-```rust
+```rust,no_run
 use xdts::{Sheet, TimeTable, Track};
 
-let sheet = Sheet {
-    cut: "12".into(),
-    tables: vec![TimeTable {
-        name: "cut012".into(),
-        duration: 24,
-        columns: vec!["A".into()],
-        tracks: vec![Track {
-            frames: vec![
-                (0,  "1".into()),
-                (12, "2".into()),
-                (24, xdts::NULL_CELL.into()),   // × でトラックを閉じる
-            ],
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let sheet = Sheet {
+        cut: "12".into(),
+        tables: vec![TimeTable {
+            name: "cut012".into(),
+            duration: 24,
+            columns: vec!["A".into()],
+            tracks: vec![Track {
+                frames: vec![
+                    (0,  "1".into()),
+                    (12, "2".into()),
+                    (24, xdts::NULL_CELL.into()),   // × でトラックを閉じる
+                ],
+            }],
+            ..TimeTable::default()
         }],
-        ..TimeTable::default()
-    }],
-    ..Sheet::default()
-};
+        ..Sheet::default()
+    };
 
-std::fs::write("cut012.xdts", xdts::xdts::to_string(&sheet, &Default::default()))?;
-std::fs::write("cut012.tdts", xdts::tdts::to_string(&sheet, &Default::default()))?;
+    std::fs::write("cut012.xdts", xdts::xdts::to_string(&sheet, &Default::default()))?;
+    std::fs::write("cut012.tdts", xdts::tdts::to_string(&sheet, &Default::default()))?;
 
-// 読み込みは拡張子ではなく先頭行で判別します
-let back = xdts::from_str(&std::fs::read_to_string("cut012.tdts")?)?;
+    // 読み込みは拡張子ではなく先頭行で判別します
+    let back = xdts::from_str(&std::fs::read_to_string("cut012.tdts")?)?;
+    assert_eq!(back.cut, "12");
+    Ok(())
+}
 ```
 
 ## モデル
 
 シートは**変化点の列**です。これは両形式がファイルに持っている形そのもので、あるコマの内容は「直前の変化点が言ったこと」です。
 
-```rust
+```rust,ignore
 pub struct Sheet       { cut, scene, episode, operator: String, tables: Vec<TimeTable>,
                          work_slip: WorkSlip,                     // 作業伝票
                          show_head_dummy: bool, font_colors: Vec<[u8; 3]>,
