@@ -1,8 +1,8 @@
 # Format fixtures are kept byte for byte, whatever bytes they have: these
 # files are the only record of what a sheet looks like, so a checkout on a
-# platform that normalises line endings must not rewrite them. Both of the
-# ones here are LF and have no BOM — they are synthetic sample sheets (see
-# NOTICE), not files the 東映 digital timesheet itself saved, so they are
-# evidence of the structure and not of the line endings.
+# platform that normalises line endings must not rewrite them. All three
+# here are LF and have no BOM — they are synthetic sample sheets (see
+# NOTICE), not files an application itself saved, so they are evidence of the
+# structure and the key order, not of the line endings.
 tests/data/*.tdts -text
 tests/data/*.xdts -text

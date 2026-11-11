@@ -21,9 +21,10 @@
 //! | sheets | `timeTables` at the top | wrapped in **`timeSheets`** |
 //! | line endings written | LF | **CRLF** |
 //! | `data[]` | `id`, `values` | plus **`fontColorId`** |
+//! | key order | as CLIP STUDIO PAINT EX writes | **as 東映 DTS writes** |
 //! | `timeTableHeaders` | only the fields written | **every field 0..5** |
 //! | sheet header | `cut`, `scene` | plus `episode`, `showHeaderDummy`, `timeTableFontColors`, `workSlip` |
-//! | time table | `duration`, `name`, `fields`, `timeTableHeaders` | plus `books`, `color`, `direction` |
+//! | time table | `name`, `duration`, `timeTableHeaders`, `fields` | plus `books`, `color`, `direction` |
 //!
 //! Version 5 is the older form, with `timeTables` at the top level and no
 //! wrapper, so `timeSheets` carrying `version: 5` is a shape no reader
@@ -153,13 +154,10 @@ fn headers(t: &TimeTable) -> Value {
     ])
 }
 
-/// Unlike XDTS, `data` carries a `fontColorId` before the instruction type.
-const FONT_COLOR: Option<(&str, u32)> = Some(("fontColorId", 0));
-
 fn time_table(t: &TimeTable, sheet: &Sheet, index: usize) -> Value {
     let mut fields = vec![Value::obj().with("fieldId", FIELD_CELL).with(
         "tracks",
-        xdts::field_tracks(xdts::cell_frames(t, false, FONT_COLOR)),
+        xdts::field_tracks(xdts::cell_frames(t, xdts::Format::Tdts), xdts::Format::Tdts),
     )];
     for (id, f) in [(FIELD_DIALOG, &t.dialogue), (FIELD_CAMERA, &t.camera)] {
         if f.is_empty() {
@@ -167,7 +165,10 @@ fn time_table(t: &TimeTable, sheet: &Sheet, index: usize) -> Value {
         }
         fields.push(Value::obj().with("fieldId", id).with(
             "tracks",
-            xdts::field_tracks(xdts::value_frames(f, FONT_COLOR)),
+            xdts::field_tracks(
+                xdts::value_frames(f, xdts::Format::Tdts),
+                xdts::Format::Tdts,
+            ),
         ));
     }
     // Keys in the order a sheet saved by the application has them.

@@ -116,9 +116,10 @@ TDTS には書き出しません。TDTS は別の形式で、東映 DTS がこ�
 | `data[]` | `id`, `values` | **`fontColorId`** が付く |
 | `timeTableHeaders` | 書いた欄だけ | **0〜5 の全欄** |
 | シートヘッダ | `cut`, `scene` | `episode`, `showHeaderDummy`, `timeTableFontColors`, `workSlip` が付く |
-| タイムテーブル | `duration`, `name`, `fields`, `timeTableHeaders` | `books`, `color`, `direction` が付く |
+| タイムテーブル | `name`, `duration`, `timeTableHeaders`, `fields` | `books`, `color`, `direction` が付く |
+| キーの並び | クリスタが書く順 | **東映 DTS が書く順**（アルファベット順） |
 
-改行について補足すると、読み込みはどちらの改行も BOM も受け付けます。TDTS を CRLF で書くのは、アプリケーション自身のシートがそうであるという理解に基づくものですが、**このリポジトリの中にその根拠はありません**（`tests/data/` の2つは合成データで、どちらも LF・BOM なしです。NOTICE を参照）。構造の裏付けにはなりますが、改行の裏付けにはなりません。
+改行について補足すると、読み込みはどちらの改行も BOM も受け付けます。TDTS を CRLF で書くのは、アプリケーション自身のシートがそうであるという理解に基づくものですが、**このリポジトリの中にその根拠はありません**（`tests/data/` のフィクスチャはどれも合成データで、LF・BOM なしです。NOTICE を参照）。構造の裏付けにはなりますが、改行の裏付けにはなりません。
 
 TDTS の version 5 は古い形式で、`timeTables` が直下にあり包みがありません。`from_str` はどちらも読みます。
 
@@ -142,8 +143,10 @@ TDTS の version 5 は古い形式で、`timeTables` が直下にあり包みが
 
 XDTS には[公開スキーマ](https://github.com/shun-iwasawa/XDTS-uext)（[version 10 の原文 PDF](https://vd.clipstudio.net/clipcontent/paint/app/ToeiAnimation/XDTSFileFormat_ver10_en.pdf)）がありますが、**TDTS には仕様書がありません**。そこで `tests/data/` に**実際のアプリケーションが保存したシート**を置き、書き出した JSON の**キー構成が完全に一致する**ことを両方向で検証しています。
 
+キーの並びは2つの形式で違うので、書き出しも形式ごとに分けています。XDTS は CLIP STUDIO PAINT EX が書く順（`version`, `header`, `timeTables` / `name`, `duration`, `timeTableHeaders`, `fields` / `trackNo`, `frames` / `frame`, `data`）、TDTS は東映 DTS が書く順（アルファベット順）です。JSON のキー順に意味はありませんが、順番が合っていればアプリケーション自身の出力と diff が取れます。XDTS については `tests/data/csp_v5.xdts` と**バイト単位で一致**することを検証しています。
+
 これが無かったために、別のプロジェクトでは `timeSheets` に `version: 5` を書いたファイルを数ヶ月にわたって出し続けていました。
 
 ## ライセンス
 
-Apache-2.0。`tests/data/` のサンプルシートは [vdts-editor](https://github.com/lunafuse/vdts-editor)（MIT）の架空の合成データです。NOTICE を参照してください。
+Apache-2.0。`tests/data/real_*` のサンプルシートは [vdts-editor](https://github.com/lunafuse/vdts-editor)（MIT）の架空の合成データです。`tests/data/csp_v5.xdts` はキーの並びと整形だけをクリスタの出力から取った架空データです。NOTICE を参照してください。

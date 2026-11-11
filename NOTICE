@@ -20,3 +20,13 @@ tests/data/real_v7.tdts, tests/data/real_v5.xdts
   Copyright (c) 2026 lunafuse
   https://github.com/lunafuse/vdts-editor
   Licensed under the MIT License.
+
+---
+
+tests/data/csp_v5.xdts
+
+  A timesheet in the exact key order and layout that CLIP STUDIO PAINT EX
+  writes, used here so that this crate's XDTS output can be checked against
+  it byte for byte. The order and layout were read off a sheet the
+  application exported; the contents are invented. No part of a production
+  timesheet is reproduced here.

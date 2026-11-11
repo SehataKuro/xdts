@@ -6,6 +6,11 @@
 //! `tests/data/real_v7.tdts` and `real_v5.xdts` are synthetic sample sheets
 //! from the vdts-editor project (MIT; see NOTICE), and the tests below demand
 //! that what this crate writes has the same keys.
+//!
+//! `tests/data/csp_v5.xdts` is the one fixture that pins the bytes rather
+//! than the keys: CLIP STUDIO PAINT EX's own key order and layout, which is
+//! not alphabetical and not TDTS's — see
+//! [`xdts_is_written_the_way_clip_studio_paint_writes_it`].
 
 use xdts::{
     json, tdts, xdts as x, Cell, Field, Sheet, TimeTable, Track, ValueTrack, WriteOptions,
@@ -638,4 +643,98 @@ fn a_cut_number_is_not_rewritten() {
     }
     // And the reduction is still available to whoever wants it.
     assert_eq!(x::header_number("C-112"), "112");
+}
+
+/// XDTS goes out the way CLIP STUDIO PAINT EX writes it, byte for byte.
+///
+/// The two formats do not share a key order. The sheet in `real_v7.tdts` has
+/// 東映 DTS's, which is alphabetical, and this crate used to write that order
+/// for XDTS as well. It is wrong there: a sheet exported by CLIP STUDIO PAINT
+/// EX puts `version` before `header`, `name` and `duration` before
+/// `timeTableHeaders` and `fields`, `trackNo` before `frames`, and `frame`
+/// before `data`.
+///
+/// Key order is not meaning — every reader of either format reads JSON — so
+/// nothing was unreadable before. What it costs is the check: a file from
+/// here could not be diffed against one from the application that reads it,
+/// which is exactly how this crate keeps TDTS honest.
+///
+/// `csp_v5.xdts` is that order and that layout with invented contents. It was
+/// taken from a sheet CLIP STUDIO PAINT EX exported — this writer reproduced
+/// that 5,393-byte sheet byte for byte — but the sheet itself was production
+/// work, so the fixture is a sheet of the same shape (one timeline, two cell
+/// columns) with a made-up cut number and timing.
+#[test]
+fn xdts_is_written_the_way_clip_studio_paint_writes_it() {
+    let sheet = Sheet {
+        cut: "7".into(),
+        scene: "2".into(),
+        tables: vec![TimeTable {
+            name: "タイムライン1".into(),
+            duration: 48,
+            columns: vec!["A".into(), "Amask".into()],
+            tracks: vec![
+                Track {
+                    frames: vec![
+                        (0, "1".into()),
+                        (6, "2".into()),
+                        (12, "3".into()),
+                        (24, "4".into()),
+                        (48, xdts::NULL_CELL.into()),
+                    ],
+                },
+                Track {
+                    frames: vec![(0, xdts::NULL_CELL.into())],
+                },
+            ],
+            ..TimeTable::default()
+        }],
+        ..Sheet::default()
+    };
+    assert_eq!(
+        x::to_string(&sheet, &WriteOptions::default()),
+        fixture("csp_v5.xdts"),
+        "this is not what CLIP STUDIO PAINT EX would have written"
+    );
+}
+
+/// And it reads back, so the order is not something only this crate's writer
+/// understands.
+#[test]
+fn the_clip_studio_paint_sheet_can_be_read() {
+    let s = x::from_str(&fixture("csp_v5.xdts")).expect("xdts");
+    assert_eq!((s.cut.as_str(), s.scene.as_str()), ("7", "2"));
+    let t = &s.tables[0];
+    assert_eq!(t.name, "タイムライン1");
+    assert_eq!(t.duration, 48);
+    assert_eq!(t.columns, ["A", "Amask"]);
+    assert_eq!(t.tracks.len(), 2);
+    assert_eq!(t.tracks[0].value_at(12).unwrap(), "3");
+    // And writing it back gives the fixture again.
+    assert_eq!(
+        x::to_string(&s, &WriteOptions::default()),
+        fixture("csp_v5.xdts")
+    );
+}
+
+/// The two formats' key orders stay apart. `trackNo` leads a track in XDTS
+/// and trails it in TDTS, which is the pair most easily broken by a shared
+/// builder losing its format argument.
+#[test]
+fn the_two_formats_keep_their_own_key_orders() {
+    let s = sample();
+    let xdts_text = x::to_string(&s, &WriteOptions::default());
+    let tdts_text = tdts::to_string(&s, &WriteOptions::default());
+    for (text, name, first) in [(&xdts_text, "xdts", true), (&tdts_text, "tdts", false)] {
+        let track_no = text.find("\"trackNo\"").expect("trackNo");
+        let frames = text.find("\"frames\"").expect("frames");
+        assert_eq!(
+            track_no < frames,
+            first,
+            "{name}: trackNo in the wrong place"
+        );
+    }
+    // `version` opens an XDTS document and closes a TDTS one.
+    assert!(xdts_text.starts_with(&format!("{}\n{{\n  \"version\"", x::HEADER)));
+    assert!(tdts_text.contains("\"version\": 7\r\n}"));
 }

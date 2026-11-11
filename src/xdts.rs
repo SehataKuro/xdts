@@ -6,18 +6,25 @@
 //! ```text
 //! exchangeDigitalTimeSheet Save Data
 //! {
+//!   "version": 5,
 //!   "header": { "cut": "1", "scene": "1" },
 //!   "timeTables": [{
-//!     "duration": 72,
-//!     "fields": [{ "fieldId": 0, "tracks": [{
-//!         "frames": [ { "data": [{ "id": 0, "values": ["1"] }], "frame": 0 }, ... ],
-//!         "trackNo": 0 }] }],
 //!     "name": "cut001",
-//!     "timeTableHeaders": [{ "fieldId": 0, "names": ["A", "B"] }]
-//!   }],
-//!   "version": 5
+//!     "duration": 72,
+//!     "timeTableHeaders": [{ "fieldId": 0, "names": ["A", "B"] }],
+//!     "fields": [{ "fieldId": 0, "tracks": [{
+//!         "trackNo": 0,
+//!         "frames": [ { "frame": 0, "data": [{ "id": 0, "values": ["1"] }] }, ... ] }] }]
+//!   }]
 //! }
 //! ```
+//!
+//! The keys go out in the order CLIP STUDIO PAINT EX writes them, which is
+//! neither alphabetical nor TDTS's order — `tests/data/csp_v5.xdts` is a
+//! sheet in that order and `tests/formats.rs` checks this writer against it
+//! byte for byte. JSON key order carries no meaning, so this is not about
+//! being read correctly; it is so a file from here can be diffed against one
+//! from the application that reads it.
 //!
 //! The published schema requires `timeTables` and `version` and makes
 //! `header` optional. Inside, `duration` has a minimum of 1, `fieldId` must
@@ -140,72 +147,80 @@ pub fn header_number(text: &str) -> String {
     }
 }
 
+/// Which writer is asking. The two formats hold the same keys in different
+/// orders — and TDTS has one key XDTS does not — so the shared builders
+/// below take this and lay their keys out accordingly.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub(crate) enum Format {
+    /// The order CLIP STUDIO PAINT EX writes, read off a sheet it saved.
+    Xdts,
+    /// The order 東映 DTS writes, read off the sheet in `tests/data/`, with
+    /// `fontColorId` on a cell and no p1 marks.
+    Tdts,
+}
+
 /// One `frames[]` entry. `values` is the whole list the field's instruction
 /// takes: one string for a cell, up to two for dialogue, up to seven for a
 /// camera move in version 10. `options` is the p1 extension's, and is left
 /// out when there is none, which is every sheet the published format can
-/// describe.
+/// describe — and always in TDTS, where nothing says the application knows
+/// the key.
 pub(crate) fn frame_entry(
     frame: usize,
     values: &[String],
     options: &[String],
-    extra: Option<(&str, u32)>,
+    format: Format,
 ) -> Value {
     let mut data = Value::obj();
-    // TDTS puts a colour before the instruction type; the keys are in
-    // alphabetical order, which is the order the files have them in.
-    if let Some((key, v)) = extra {
-        data = data.with(key, v);
+    // TDTS puts a colour before the instruction type.
+    if format == Format::Tdts {
+        data = data.with("fontColorId", 0u32);
     }
     data = data.with("id", 0u32);
-    if !options.is_empty() {
+    if format == Format::Xdts && !options.is_empty() {
         data = data.with(
             "options",
             Value::Array(options.iter().map(|o| Value::from(o.as_str())).collect()),
         );
     }
     let values: Vec<Value> = values.iter().map(|v| Value::from(v.as_str())).collect();
-    Value::obj()
-        .with(
-            "data",
-            // The schema asks for at least one value, and a frame with
-            // nothing in it has no business being a change point.
-            Value::Array(vec![data.with("values", Value::Array(values))]),
-        )
-        .with("frame", frame)
+    // The schema asks for at least one value, and a frame with nothing in it
+    // has no business being a change point.
+    let data = Value::Array(vec![data.with("values", Value::Array(values))]);
+    match format {
+        Format::Xdts => Value::obj().with("frame", frame).with("data", data),
+        Format::Tdts => Value::obj().with("data", data).with("frame", frame),
+    }
 }
 
 /// The `tracks[]` of one field, numbered from the bottom layer up.
-pub(crate) fn field_tracks<'a>(frames: impl Iterator<Item = Vec<Value>> + 'a) -> Value {
+pub(crate) fn field_tracks<'a>(
+    frames: impl Iterator<Item = Vec<Value>> + 'a,
+    format: Format,
+) -> Value {
     Value::Array(
         frames
             .enumerate()
             .map(|(i, frames)| {
-                Value::obj()
-                    .with("frames", Value::Array(frames))
-                    .with("trackNo", i)
+                let frames = Value::Array(frames);
+                match format {
+                    Format::Xdts => Value::obj().with("trackNo", i).with("frames", frames),
+                    Format::Tdts => Value::obj().with("frames", frames).with("trackNo", i),
+                }
             })
             .collect(),
     )
 }
 
 /// The cell field's frame entries, one list per column.
-///
-/// `options` says whether a cell's marks may be written: they are the p1
-/// extension of XDTS, and nothing says the application behind TDTS knows the
-/// key, so that writer leaves them out.
 pub(crate) fn cell_frames<'a>(
     t: &'a TimeTable,
-    options: bool,
-    extra: Option<(&'a str, u32)>,
+    format: Format,
 ) -> impl Iterator<Item = Vec<Value>> + 'a {
     t.tracks.iter().map(move |tr| {
         tr.frames
             .iter()
-            .map(|(f, c)| {
-                let marks: &[String] = if options { &c.options } else { &[] };
-                frame_entry(*f, std::slice::from_ref(&c.value), marks, extra)
-            })
+            .map(|(f, c)| frame_entry(*f, std::slice::from_ref(&c.value), &c.options, format))
             .collect()
     })
 }
@@ -213,12 +228,12 @@ pub(crate) fn cell_frames<'a>(
 /// A dialogue or camerawork field's frame entries, one list per column.
 pub(crate) fn value_frames<'a>(
     f: &'a Field,
-    extra: Option<(&'a str, u32)>,
+    format: Format,
 ) -> impl Iterator<Item = Vec<Value>> + 'a {
     f.tracks.iter().map(move |tr| {
         tr.frames
             .iter()
-            .map(|(fr, v)| frame_entry(*fr, v, &[], extra))
+            .map(|(fr, v)| frame_entry(*fr, v, &[], format))
             .collect()
     })
 }
@@ -235,7 +250,10 @@ fn time_table(t: &TimeTable, sheet: &Sheet) -> Value {
     // Field 0 is always there; the other two are written only where the sheet
     // has something to put in them, so a cells-only sheet is byte for byte
     // what it was before this crate could carry the rest.
-    let mut fields = vec![field(FIELD_CELL, field_tracks(cell_frames(t, true, None)))];
+    let mut fields = vec![field(
+        FIELD_CELL,
+        field_tracks(cell_frames(t, Format::Xdts), Format::Xdts),
+    )];
     let mut headers = vec![Value::obj()
         .with("fieldId", FIELD_CELL)
         .with("names", names(&t.columns))];
@@ -243,7 +261,10 @@ fn time_table(t: &TimeTable, sheet: &Sheet) -> Value {
         if f.is_empty() {
             continue;
         }
-        fields.push(field(id, field_tracks(value_frames(f, None))));
+        fields.push(field(
+            id,
+            field_tracks(value_frames(f, Format::Xdts), Format::Xdts),
+        ));
         headers.push(
             Value::obj()
                 .with("fieldId", id)
@@ -251,20 +272,21 @@ fn time_table(t: &TimeTable, sheet: &Sheet) -> Value {
         );
     }
     let mut v = Value::obj()
+        .with("name", t.name.as_str())
         // The schema asks for at least one frame.
         .with("duration", t.duration.max(1))
-        .with("fields", Value::Array(fields))
-        .with("name", t.name.as_str());
+        .with("timeTableHeaders", Value::Array(headers))
+        .with("fields", Value::Array(fields));
     // Not in the published schema and not written by every application, but
     // an unknown key is accepted and the alternative is dropping a name the
     // caller has in hand. Left out entirely when there is none, so a sheet
-    // with no operator is byte for byte what the schema describes. It sits
-    // here, in its alphabetical place, because that is the order the files
-    // these are read beside put their keys in.
+    // with no operator is byte for byte what the schema describes. It goes
+    // last because the sheet this order was read off does not have the key,
+    // so there is no position in it to copy.
     if !sheet.operator.is_empty() {
         v = v.with("operatorName", sheet.operator.as_str());
     }
-    v.with("timeTableHeaders", Value::Array(headers))
+    v
 }
 
 /// The cut and scene numbers, written as the caller has them.
@@ -295,14 +317,14 @@ pub fn header(sheet: &Sheet) -> Value {
 
 pub fn to_value(sheet: &Sheet) -> Value {
     let tables: Vec<Value> = sheet.tables.iter().map(|t| time_table(t, sheet)).collect();
-    let mut v = Value::obj().with("header", header(sheet));
-    // Alphabetically between `header` and `timeTables`, which is where a
-    // writer that sorts its keys — OpenToonz's does — puts it.
+    let mut v = Value::obj().with("version", version(sheet));
+    // Beside the version it qualifies. The sheet this order was read off has
+    // no marks on it, and so no `subversion` to copy a position from.
     if let Some(sub) = subversion(sheet) {
         v = v.with("subversion", sub);
     }
-    v.with("timeTables", Value::Array(tables))
-        .with("version", version(sheet))
+    v.with("header", header(sheet))
+        .with("timeTables", Value::Array(tables))
 }
 
 pub fn to_string(sheet: &Sheet, opts: &WriteOptions) -> String {
