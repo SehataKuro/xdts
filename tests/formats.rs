@@ -857,6 +857,7 @@ fn the_work_slip_is_not_blanked() {
                 },
             ],
         }],
+        ..WorkSlip::default()
     };
     s.show_head_dummy = true;
     s.font_colors = vec![[1, 2, 3], [4, 5, 6]];
@@ -1013,4 +1014,142 @@ fn a_coloured_line_keeps_its_colour() {
             .font_color,
         0
     );
+}
+
+/// Insert `key: value` into the object at `path` (a list of object keys and
+/// array indexes, as strings) of a parsed document.
+fn insert_at(v: &mut json::Value, path: &[&str], key: &str, value: json::Value) {
+    let mut at = v;
+    for step in path {
+        at = match at {
+            json::Value::Object(m) => &mut m.iter_mut().find(|(k, _)| k == step).unwrap().1,
+            json::Value::Array(a) => &mut a[step.parse::<usize>().unwrap()],
+            _ => panic!("no {step}"),
+        };
+    }
+    match at {
+        json::Value::Object(m) => {
+            m.push((key.into(), value));
+            // TDTS keys are in alphabetical order at every level.
+            m.sort_by(|a, b| a.0.cmp(&b.0));
+        }
+        _ => panic!("not an object"),
+    }
+}
+
+/// A saved sheet with keys in it this crate has never heard of — at the top,
+/// in a sheet, in the header, in the work slip, in a time table, and inside
+/// `free` — comes back byte for byte, every one of them where the
+/// application would have put it.
+///
+/// This is the test for the whole kind of mistake this crate kept making:
+/// the direction, the name, the colours, the dummy frames and the work slip
+/// were each a key it did not know, dropped on the way through, until each
+/// was found and given a place. A key not found yet is now kept anyway.
+#[test]
+fn keys_this_crate_does_not_know_come_back_where_they_were() {
+    let text = fixture("saved_v10.tdts");
+    let mut v = json::parse(text.split_once('\n').unwrap().1).unwrap();
+    let tag = |s: &str| json::Value::String(s.into());
+    insert_at(&mut v, &[], "appVersion", tag("3.8.0"));
+    insert_at(
+        &mut v,
+        &["timeSheets", "0"],
+        "locked",
+        json::Value::Bool(true),
+    );
+    insert_at(
+        &mut v,
+        &["timeSheets", "0", "free"],
+        "note",
+        tag("free is kept with what is in it"),
+    );
+    insert_at(&mut v, &["timeSheets", "0", "header"], "title", tag("夢"));
+    insert_at(
+        &mut v,
+        &["timeSheets", "0", "header", "workSlip"],
+        "stamp",
+        tag("済"),
+    );
+    insert_at(
+        &mut v,
+        &["timeSheets", "0", "timeTables", "0"],
+        "books",
+        json::Value::Array(vec![json::Value::obj()
+            .with("fieldId", 0u32)
+            .with("tracks", json::Value::Array(Vec::new()))]),
+    );
+    let with_unknowns = format!("{}\n{}\n", tdts::HEADER, v.to_pretty_indent(4));
+
+    let sheet = tdts::from_str(&with_unknowns).unwrap();
+    assert_eq!(sheet.extra.len(), 1);
+    assert_eq!(sheet.header_extra.len(), 1);
+    assert_eq!(sheet.work_slip.extra.len(), 1);
+    assert_eq!(sheet.tables[0].extra.len(), 1);
+    // `locked`, and `free` because there is something in it now.
+    assert_eq!(sheet.tables[0].sheet_extra.len(), 2);
+
+    let again = tdts::to_string(&sheet, &WriteOptions::default());
+    assert_eq!(
+        again, with_unknowns,
+        "a key this crate does not know was lost or moved"
+    );
+}
+
+/// XDTS keeps them too, at the end of their object, because XDTS's order is
+/// not alphabetical and there is nowhere better to put them.
+#[test]
+fn xdts_keeps_keys_it_does_not_know() {
+    let mut text = x::to_string(&sample(), &WriteOptions::default());
+    text = text.replacen("\"version\": 5", "\"version\": 5,\n  \"tool\": \"x\"", 1);
+    text = text.replacen("\"scene\": \"3\"", "\"scene\": \"3\",\n    \"take\": 2", 1);
+    text = text.replacen(
+        "\"name\": \"cut012\"",
+        "\"name\": \"cut012\",\n      \"rate\": 24",
+        1,
+    );
+
+    let s = x::from_str(&text).unwrap();
+    assert_eq!(s.extra[0].0, "tool");
+    assert_eq!(s.header_extra[0].0, "take");
+    assert_eq!(s.tables[0].extra[0].0, "rate");
+
+    let back = x::from_str(&x::to_string(&s, &WriteOptions::default())).unwrap();
+    assert_eq!(back.extra, s.extra);
+    assert_eq!(back.header_extra, s.header_extra);
+    assert_eq!(back.tables[0].extra, s.tables[0].extra);
+}
+
+/// A key kept from one format is not written into the other. `books` from a
+/// TDTS file has no business in an XDTS one, and `rate` from an XDTS file
+/// none in a TDTS one.
+#[test]
+fn a_kept_key_stays_in_its_own_format() {
+    let seven = tdts::from_str(&fixture("synthetic_v7.tdts")).unwrap();
+    assert!(seven.tables[0].extra.iter().any(|(k, _)| k == "books"));
+    assert!(!x::to_string(&seven, &WriteOptions::default()).contains("books"));
+    // Written back as TDTS, it is still there.
+    assert!(tdts::to_string(&seven, &WriteOptions::default()).contains("\"books\""));
+
+    let text = x::to_string(&sample(), &WriteOptions::default()).replacen(
+        "\"name\": \"cut012\"",
+        "\"name\": \"cut012\",\n      \"rate\": 24",
+        1,
+    );
+    let s = x::from_str(&text).unwrap();
+    assert!(!tdts::to_string(&s, &WriteOptions::default()).contains("rate"));
+}
+
+/// A key this crate reads but the format being read does not write is kept
+/// too. `direction` is a TDTS key; an XDTS file that has one gets it back.
+#[test]
+fn a_key_the_other_format_models_is_kept_as_well() {
+    let text = x::to_string(&sample(), &WriteOptions::default()).replacen(
+        "\"name\": \"cut012\"",
+        "\"name\": \"cut012\",\n      \"direction\": \"PAN\"",
+        1,
+    );
+    let s = x::from_str(&text).unwrap();
+    assert_eq!(s.tables[0].direction, "PAN");
+    assert!(x::to_string(&s, &WriteOptions::default()).contains("\"direction\": \"PAN\""));
 }

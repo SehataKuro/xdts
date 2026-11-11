@@ -88,8 +88,8 @@
 
 use crate::json::{self, Value};
 use crate::{
-    Cell, Error, Field, Instruction, Sheet, TimeTable, Track, ValueTrack, WriteOptions,
-    FIELD_CAMERA, FIELD_CELL, FIELD_CELL_ALT, FIELD_DIALOG,
+    Cell, Error, Extra, Field, Format, Instruction, Sheet, TimeTable, Track, ValueTrack,
+    WriteOptions, FIELD_CAMERA, FIELD_CELL, FIELD_CELL_ALT, FIELD_DIALOG,
 };
 
 /// The first line of every XDTS file, which is how one is recognised.
@@ -284,6 +284,56 @@ pub(crate) fn value_frames<'a>(f: &'a Field, d: Dialect) -> impl Iterator<Item =
     })
 }
 
+/// The keys of `obj` that are not in `known`, in the order the file has them.
+///
+/// `known` is exactly the keys the writer for that format writes out of the
+/// model, so that whatever is not one of them is kept and goes back. A key
+/// this crate reads but that format's writer does not write — `direction` in
+/// an XDTS file, say — is kept as well, for that reason.
+pub(crate) fn extra_of(obj: &Value, known: &[&str]) -> Extra {
+    match obj {
+        Value::Object(m) => m
+            .iter()
+            .filter(|(k, _)| !known.contains(&k.as_str()))
+            .cloned()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// `obj` with each key in `extra` that it does not already have, at the end.
+/// A key the writer wrote from the model wins over one kept from the file.
+pub(crate) fn with_extra(mut obj: Value, extra: &[(String, Value)]) -> Value {
+    if let Value::Object(m) = &mut obj {
+        for (k, v) in extra {
+            if !m.iter().any(|(key, _)| key == k) {
+                m.push((k.clone(), v.clone()));
+            }
+        }
+    }
+    obj
+}
+
+/// The keys of each object an XDTS writer writes out of the model; see
+/// [`extra_of`].
+pub(crate) struct Keys {
+    pub root: &'static [&'static str],
+    pub header: &'static [&'static str],
+    pub table: &'static [&'static str],
+}
+
+pub(crate) const XDTS_KEYS: Keys = Keys {
+    root: &["timeTables", "version", "subversion", "header"],
+    header: &["cut", "scene"],
+    table: &[
+        "duration",
+        "fields",
+        "name",
+        "operatorName",
+        "timeTableHeaders",
+    ],
+};
+
 fn field(id: u32, tracks: Value) -> Value {
     // A saved XDTS has the tracks before the field they are in.
     Value::obj().with("tracks", tracks).with("fieldId", id)
@@ -326,7 +376,12 @@ fn time_table(t: &TimeTable, sheet: &Sheet) -> Value {
     if !sheet.operator.is_empty() {
         v = v.with("operatorName", sheet.operator.as_str());
     }
-    v.with("timeTableHeaders", Value::Array(headers))
+    let v = v.with("timeTableHeaders", Value::Array(headers));
+    if sheet.read_from == Some(Format::Xdts) {
+        with_extra(v, &t.extra)
+    } else {
+        v
+    }
 }
 
 /// The cut and scene numbers, written as the caller has them.
@@ -370,7 +425,15 @@ pub fn to_value(sheet: &Sheet) -> Value {
     if let Some(sub) = subversion(sheet) {
         v = v.with("subversion", sub);
     }
-    v.with("header", header(sheet))
+    // Keys this crate does not model go back where they came from, at the end
+    // of their object: there is no order to put them in but the file's own,
+    // and XDTS's is not alphabetical.
+    if sheet.read_from == Some(Format::Xdts) {
+        v = with_extra(v, &sheet.extra);
+        v.with("header", with_extra(header(sheet), &sheet.header_extra))
+    } else {
+        v.with("header", header(sheet))
+    }
 }
 
 /// The whole file: the header line, then the JSON.
@@ -529,7 +592,16 @@ fn count(tt: &Value, key: &str) -> usize {
 /// there, with the p1 marks on it where a file has them; dialogue and
 /// camerawork keep the whole list the file gave, which for camerawork in a
 /// version 10 file is the camera position as well as the direction.
+///
+/// Keys it does not model go into [`TimeTable::extra`], judged against the
+/// keys an XDTS writer writes.
 pub fn time_table_from_value(tt: &Value) -> TimeTable {
+    time_table_from_value_with(tt, XDTS_KEYS.table)
+}
+
+/// [`time_table_from_value`], with the time table keys of the format being
+/// read, so that what counts as unknown is judged against the right writer.
+pub(crate) fn time_table_from_value_with(tt: &Value, known: &[&str]) -> TimeTable {
     let duration = tt.get("duration").and_then(|d| d.as_index()).unwrap_or(0) as usize;
     // TDTS has two cell columns and shows the other one where it has
     // anything in it. XDTS files have no field 4, so this costs them a look
@@ -558,9 +630,11 @@ pub fn time_table_from_value(tt: &Value) -> TimeTable {
         cell_field,
         dialogue,
         camera,
-        // Set by the TDTS reader, which is the only place a sheet has a
-        // history: one `timeTables[]` entry on its own knows nothing of the
-        // ones beside it.
+        // Set by the readers, which know which format's keys are which, and
+        // by the TDTS reader, which is the only place a sheet has a history
+        // or a `timeSheets[]` entry to be read out of.
+        extra: extra_of(tt, known),
+        sheet_extra: Vec::new(),
         revisions: Vec::new(),
         // TDTS keys, read here because both formats' time tables are decoded
         // by this one function. XDTS has none of them and simply has none.
@@ -571,8 +645,6 @@ pub fn time_table_from_value(tt: &Value) -> TimeTable {
     }
 }
 
-/// Decode a document body. Shared with [`crate::tdts`], whose time tables
-/// have the same shape inside their wrapper.
 /// A sheet with its header filled in and no time tables yet.
 ///
 /// `episode` is a TDTS key. Reading it here costs nothing and means the one
@@ -597,6 +669,12 @@ pub(crate) fn operator_of(tt: &Value) -> String {
 /// Decode a document body. Shared with [`crate::tdts`], whose time tables
 /// have the same shape inside their wrapper.
 pub fn from_value(v: &Value) -> Result<Sheet, Error> {
+    from_value_as(v, Format::Xdts, &XDTS_KEYS)
+}
+
+/// [`from_value`] for either format, given that format's keys: a version 5
+/// TDTS has this shape too.
+pub(crate) fn from_value_as(v: &Value, format: Format, keys: &Keys) -> Result<Sheet, Error> {
     let mut sheet = sheet_from_header(v);
     let tables = v
         .get("timeTables")
@@ -605,7 +683,15 @@ pub fn from_value(v: &Value) -> Result<Sheet, Error> {
     if let Some(first) = tables.first() {
         sheet.operator = operator_of(first);
     }
-    sheet.tables = tables.iter().map(time_table_from_value).collect();
+    sheet.tables = tables
+        .iter()
+        .map(|tt| time_table_from_value_with(tt, keys.table))
+        .collect();
+    sheet.read_from = Some(format);
+    sheet.extra = extra_of(v, keys.root);
+    if let Some(h) = v.get("header") {
+        sheet.header_extra = extra_of(h, keys.header);
+    }
     Ok(sheet)
 }
 

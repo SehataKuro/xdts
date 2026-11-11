@@ -82,8 +82,8 @@
 use crate::json::{self, Value};
 use crate::xdts;
 use crate::{
-    Error, Process, Sheet, TimeTable, Work, WorkSlip, WorkTrack, WriteOptions, FIELD_CAMERA,
-    FIELD_CELL, FIELD_CELL_ALT, FIELD_DIALOG,
+    Error, Format, Process, Sheet, TimeTable, Work, WorkSlip, WorkTrack, WriteOptions,
+    FIELD_CAMERA, FIELD_CELL, FIELD_CELL_ALT, FIELD_DIALOG,
 };
 
 /// The first line of every TDTS file, which is how one is recognised.
@@ -95,6 +95,57 @@ pub const VERSION: u32 = 10;
 
 /// The indent a sheet saved by the application has, in spaces per level.
 const INDENT: usize = 4;
+
+/// The keys of each object this crate's TDTS writer writes out of the model.
+/// Anything else a file has is kept and written back; see [`xdts::extra_of`].
+/// `free` is not among them: this crate writes it empty, and keeps whatever
+/// a file had in it.
+const ROOT_KEYS: &[&str] = &["timeSheets", "version"];
+const SHEET_KEYS: &[&str] = &["header", "timeTables"];
+const HEADER_KEYS: &[&str] = &[
+    "cut",
+    "episode",
+    "scene",
+    "showHeadDummy",
+    "timeTableFontColors",
+    "workSlip",
+];
+const SLIP_KEYS: &[&str] = &["memo", "processes", "works"];
+const TABLE_KEYS: &[&str] = &[
+    "color",
+    "direction",
+    "duration",
+    "fields",
+    "footDummykomas",
+    "headDummykomas",
+    "name",
+    "operatorName",
+    "timeTableHeaders",
+];
+
+/// A version 5 TDTS has the XDTS shape, with this format's keys.
+const V5_KEYS: xdts::Keys = xdts::Keys {
+    root: &["header", "timeTables", "version"],
+    header: HEADER_KEYS,
+    table: TABLE_KEYS,
+};
+
+/// `obj` with the keys kept from the file put back, where this sheet came
+/// from a TDTS file, and every key in alphabetical order, which is the order
+/// a saved sheet has them in at every level. Sorting does not move the keys
+/// this crate writes, which it writes in that order already; it is what puts
+/// a kept key back where the application would have put it.
+fn finish(obj: Value, sheet: &Sheet, extra: &[(String, Value)]) -> Value {
+    let mut obj = if sheet.read_from == Some(Format::Tdts) {
+        xdts::with_extra(obj, extra)
+    } else {
+        obj
+    };
+    if let Value::Object(m) = &mut obj {
+        m.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+    obj
+}
 
 /// The application's own text colours: black, red, green, blue, purple,
 /// orange.
@@ -116,7 +167,7 @@ fn strings(v: &[&str]) -> Value {
 /// A saved sheet has three processes and two works of seven tracks whether
 /// or not anyone wrote in them, so a shorter [`WorkSlip`] is padded rather
 /// than written short: a file without the whole form is not the format.
-fn work_slip(w: &WorkSlip) -> Value {
+fn work_slip(w: &WorkSlip, sheet: &Sheet) -> Value {
     let process = |p: Option<&Process>| {
         let d = Process::default();
         let p = p.unwrap_or(&d);
@@ -143,7 +194,7 @@ fn work_slip(w: &WorkSlip) -> Value {
             .with("enable", w.enable)
             .with("tracks", Value::Array(tracks))
     };
-    Value::obj()
+    let slip = Value::obj()
         .with("memo", w.memo.as_str())
         .with(
             "processes",
@@ -156,7 +207,8 @@ fn work_slip(w: &WorkSlip) -> Value {
         .with(
             "works",
             Value::Array((0..WORKS).map(|i| work(w.works.get(i))).collect()),
-        )
+        );
+    finish(slip, sheet, &w.extra)
 }
 
 /// One `workSlip` as the application lays it out.
@@ -196,6 +248,7 @@ fn work_slip_from_value(v: &Value) -> WorkSlip {
                     .collect(),
             })
             .collect(),
+        extra: xdts::extra_of(v, SLIP_KEYS),
     }
 }
 
@@ -271,7 +324,7 @@ fn time_table(t: &TimeTable, sheet: &Sheet, index: usize) -> Value {
         ));
     }
     // Keys in the order a sheet saved by the application has them.
-    Value::obj()
+    let v = Value::obj()
         .with("color", t.color)
         .with("direction", t.direction.as_str())
         .with("duration", t.duration.max(1))
@@ -290,7 +343,8 @@ fn time_table(t: &TimeTable, sheet: &Sheet, index: usize) -> Value {
             },
         )
         .with("operatorName", sheet.operator.as_str())
-        .with("timeTableHeaders", headers(t))
+        .with("timeTableHeaders", headers(t));
+    finish(v, sheet, &t.extra)
 }
 
 /// The sheet header. Unlike XDTS this has somewhere to put the episode.
@@ -308,7 +362,7 @@ pub fn header(sheet: &Sheet) -> Value {
             .map(|c| Value::Array(c.iter().map(|&v| Value::from(v as i64)).collect()))
             .collect()
     };
-    Value::obj()
+    let h = Value::obj()
         .with("cut", sheet.cut.as_str())
         .with("episode", sheet.episode.as_str())
         .with("scene", sheet.scene.as_str())
@@ -316,17 +370,27 @@ pub fn header(sheet: &Sheet) -> Value {
         // head of the sheet, as `headDummykomas` below counts them.
         .with("showHeadDummy", sheet.show_head_dummy)
         .with("timeTableFontColors", Value::Array(colors))
-        .with("workSlip", work_slip(&sheet.work_slip))
+        .with("workSlip", work_slip(&sheet.work_slip, sheet));
+    finish(h, sheet, &sheet.header_extra)
 }
 
 /// One `timeSheets[]` entry: a sheet, and the one revision of it this crate
 /// has.
-fn time_sheet(sheet: &Sheet, tables: Vec<Value>) -> Value {
-    Value::obj()
-        // Empty in a saved sheet, and this crate has nothing to put in it.
-        .with("free", Value::obj())
+fn time_sheet(sheet: &Sheet, table: Option<&TimeTable>, tables: Vec<Value>) -> Value {
+    let ts = Value::obj()
         .with("header", header(sheet))
-        .with("timeTables", Value::Array(tables))
+        .with("timeTables", Value::Array(tables));
+    let kept = table.map(|t| t.sheet_extra.as_slice()).unwrap_or(&[]);
+    let mut ts = finish(ts, sheet, kept);
+    // `free` is in every saved sheet, empty in every one seen so far. What a
+    // file had in it was kept above; a sheet with none gets the empty one.
+    if let Value::Object(m) = &mut ts {
+        if !m.iter().any(|(k, _)| k == "free") {
+            m.push(("free".into(), Value::obj()));
+            m.sort_by(|a, b| a.0.cmp(&b.0));
+        }
+    }
+    ts
 }
 
 /// The whole document, ready to be written.
@@ -349,16 +413,17 @@ pub fn to_value(sheet: &Sheet) -> Value {
                 .map(|r| time_table(r, sheet, i))
                 .collect();
             tables.push(time_table(t, sheet, i));
-            time_sheet(sheet, tables)
+            time_sheet(sheet, Some(t), tables)
         })
         .collect();
     // A sheet with nothing in it is still a document with a header.
     if sheets.is_empty() {
-        sheets.push(time_sheet(sheet, Vec::new()));
+        sheets.push(time_sheet(sheet, None, Vec::new()));
     }
-    Value::obj()
+    let root = Value::obj()
         .with("timeSheets", Value::Array(sheets))
-        .with("version", version(sheet))
+        .with("version", version(sheet));
+    finish(root, sheet, &sheet.extra)
 }
 
 /// The version to write: the one the sheet was read with, where this crate
@@ -404,12 +469,15 @@ pub fn from_str(text: &str) -> Result<Sheet, Error> {
         return Err(Error::Parse(format!("expected header line {HEADER:?}")));
     }
     let v = json::parse(body)?;
-    // Version 5 has the time tables at the top level, with no wrapper, and is
-    // then the same document XDTS has.
     let file_version = v.get("version").and_then(|n| n.as_index()).unwrap_or(0);
+    // Version 5 has the time tables at the top level, with no wrapper, and is
+    // then the shape XDTS has, with this format's keys.
     let Some(sheets) = v.get("timeSheets").and_then(|t| t.as_array()) else {
-        let mut sheet = xdts::from_value(&v)?;
+        let mut sheet = xdts::from_value_as(&v, Format::Tdts, &V5_KEYS)?;
         sheet.version = file_version;
+        if let Some(h) = v.get("header") {
+            read_header(&mut sheet, h);
+        }
         return Ok(sheet);
     };
     let Some(first) = sheets.first() else {
@@ -420,34 +488,10 @@ pub fn from_str(text: &str) -> Result<Sheet, Error> {
     // a file are the sheets of a cut.
     let mut sheet = xdts::sheet_from_header(first);
     sheet.version = file_version;
+    sheet.read_from = Some(Format::Tdts);
+    sheet.extra = xdts::extra_of(&v, ROOT_KEYS);
     if let Some(h) = first.get("header") {
-        sheet.show_head_dummy = h
-            .get("showHeadDummy")
-            .and_then(|b| b.as_bool())
-            .unwrap_or(false);
-        if let Some(w) = h.get("workSlip") {
-            sheet.work_slip = work_slip_from_value(w);
-        }
-        // Only when they are not the ones the application always writes, so
-        // that a sheet with the usual colours stays a sheet with no colours
-        // of its own.
-        // All or nothing: a cell's colour is an index into this list, so
-        // dropping one entry that does not read would quietly recolour every
-        // cell after it.
-        let colors: Option<Vec<[u8; 3]>> = h
-            .get("timeTableFontColors")
-            .and_then(|c| c.as_array())
-            .unwrap_or(&[])
-            .iter()
-            .map(|c| {
-                let c = c.as_array()?;
-                let get = |i: usize| u8::try_from(c.get(i)?.as_index()?).ok();
-                Some([get(0)?, get(1)?, get(2)?])
-            })
-            .collect();
-        if let Some(colors) = colors.filter(|c| !c.is_empty() && c[..] != FONT_COLORS) {
-            sheet.font_colors = colors;
-        }
+        read_header(&mut sheet, h);
     }
     for ts in sheets {
         let revisions = ts
@@ -461,10 +505,50 @@ pub fn from_str(text: &str) -> Result<Sheet, Error> {
             if sheet.operator.is_empty() {
                 sheet.operator = xdts::operator_of(latest);
             }
-            let mut table = xdts::time_table_from_value(latest);
-            table.revisions = earlier.iter().map(xdts::time_table_from_value).collect();
+            let read = |tt: &Value| xdts::time_table_from_value_with(tt, TABLE_KEYS);
+            let mut table = read(latest);
+            table.revisions = earlier.iter().map(read).collect();
+            table.sheet_extra = xdts::extra_of(ts, SHEET_KEYS);
+            // An empty `free` is what the writer puts in every sheet anyway,
+            // so it is nothing to keep, and keeping it would make a sheet read
+            // twice differ from the sheet read once.
+            table
+                .sheet_extra
+                .retain(|(k, v)| !(k == "free" && matches!(v, Value::Object(m) if m.is_empty())));
             sheet.tables.push(table);
         }
     }
     Ok(sheet)
+}
+
+/// The parts of a sheet header XDTS does not have, and the keys in it this
+/// crate does not model.
+fn read_header(sheet: &mut Sheet, h: &Value) {
+    sheet.header_extra = xdts::extra_of(h, HEADER_KEYS);
+    sheet.show_head_dummy = h
+        .get("showHeadDummy")
+        .and_then(|b| b.as_bool())
+        .unwrap_or(false);
+    if let Some(w) = h.get("workSlip") {
+        sheet.work_slip = work_slip_from_value(w);
+    }
+    // Only when they are not the ones the application always writes, so that
+    // a sheet with the usual colours stays a sheet with no colours of its
+    // own. All or nothing: a cell's colour is an index into this list, so
+    // dropping one entry that does not read would quietly recolour every
+    // cell after it.
+    let colors: Option<Vec<[u8; 3]>> = h
+        .get("timeTableFontColors")
+        .and_then(|c| c.as_array())
+        .unwrap_or(&[])
+        .iter()
+        .map(|c| {
+            let c = c.as_array()?;
+            let get = |i: usize| u8::try_from(c.get(i)?.as_index()?).ok();
+            Some([get(0)?, get(1)?, get(2)?])
+        })
+        .collect();
+    if let Some(colors) = colors.filter(|c| !c.is_empty() && c[..] != FONT_COLORS) {
+        sheet.font_colors = colors;
+    }
 }

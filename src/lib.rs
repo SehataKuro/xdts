@@ -331,7 +331,7 @@ impl Field {
 }
 
 /// One sheet of a cut: its length, its column names and its columns.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TimeTable {
     /// The sheet's name. The application numbers them sheet1, sheet2, …
     pub name: String,
@@ -351,6 +351,11 @@ pub struct TimeTable {
     /// A file is written back to the column it was read from. The XDTS writer
     /// ignores this, because field 4 is not a field that format has.
     pub cell_field: u32,
+    /// Keys in this time table this crate does not model.
+    pub extra: Extra,
+    /// Keys in the TDTS `timeSheets[]` entry this sheet was read from, beside
+    /// its header and its time tables: `free` is one.
+    pub sheet_extra: Extra,
     /// The earlier revisions of this sheet, oldest first.
     ///
     /// TDTS keeps the history of a sheet beside it: the `timeTables` of one
@@ -375,6 +380,25 @@ pub struct TimeTable {
     /// Like [`Sheet::episode`], this has a place in TDTS and none in XDTS, so
     /// it survives one format and not the other.
     pub direction: String,
+}
+
+/// Keys this crate does not model, kept as they were read, in the order they
+/// were read, so that writing a sheet back does not lose them.
+///
+/// Every key a file has that this crate does not know is one a converter
+/// silently drops, and this crate has lost a sheet's direction, its name, its
+/// colours, its dummy frames and its work slip that way before each was given
+/// a place. These are the place for the ones not found yet. They are written
+/// back only into the format they were read from; see [`Sheet::read_from`].
+pub type Extra = Vec<(String, json::Value)>;
+
+/// Which of the two formats a sheet was read from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    /// XDTS.
+    Xdts,
+    /// TDTS.
+    Tdts,
 }
 
 /// One of the work slip's rows of names: who did a process, and in what
@@ -423,7 +447,7 @@ pub struct Work {
 /// whatever this does not have, because a file without the form is not the
 /// format. XDTS has no work slip, so it survives one format and not the
 /// other.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct WorkSlip {
     /// The free note at the top of the slip.
     pub memo: String,
@@ -431,12 +455,15 @@ pub struct WorkSlip {
     pub processes: Vec<Process>,
     /// Who drew how much. A saved sheet has two.
     pub works: Vec<Work>,
+    /// Keys in the slip this crate does not model.
+    pub extra: Extra,
 }
 
 impl WorkSlip {
     /// Whether anything has been written on it.
     pub fn is_empty(&self) -> bool {
         self.memo.is_empty()
+            && self.extra.is_empty()
             && self.processes.iter().all(|p| p == &Process::default())
             && self
                 .works
@@ -449,7 +476,7 @@ impl WorkSlip {
 ///
 /// `episode` has a place in TDTS and none in XDTS, so it survives one format
 /// and not the other.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Sheet {
     /// Cut number, as whoever wrote it wrote it.
     pub cut: String,
@@ -474,6 +501,16 @@ pub struct Sheet {
     /// The TDTS version this sheet was read from, or 0 for a sheet that was
     /// not read from one. See [`tdts::to_value`] for what is written back.
     pub version: u32,
+    /// The format this sheet was read from, if it was read from one.
+    ///
+    /// The [`Extra`] keys on a sheet belong to that format and are written
+    /// back only into it: a key from a TDTS file has no business in an XDTS
+    /// one, where it would be noise at best.
+    pub read_from: Option<Format>,
+    /// Keys at the top of the document this crate does not model.
+    pub extra: Extra,
+    /// Keys in the sheet header this crate does not model.
+    pub header_extra: Extra,
 }
 
 /// How to write a sheet out.
