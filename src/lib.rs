@@ -1,5 +1,5 @@
-//! Read and write animation exposure sheets in the XDTS and TDTS formats,
-//! with no dependencies.
+//! Read and write animation exposure sheets in the XDTS, TDTS and STS
+//! formats, and read them out of OpenToonz scenes, with no dependencies.
 //!
 //! * **XDTS** — "eXchange Digital Time Sheet" (CELSYS with 東映アニメーション,
 //!   2018). The interchange format, read and written by CLIP STUDIO PAINT,
@@ -7,6 +7,13 @@
 //! * **TDTS** — the native format of 東映アニメーション デジタルタイムシート.
 //!   Close to XDTS but not the same, and the differences are not optional:
 //!   see [`tdts`].
+//! * **STS** — the binary sheet of シラヘイタイムシート, read and written by
+//!   DiTiS today. Drawing numbers only: see [`sts`].
+//! * **TNZ** — an OpenToonz or Tahoma2D scene, read (not written) for its
+//!   cell columns the way OpenToonz's own XDTS export reads them: see
+//!   [`tnz`].
+//!
+//! [`from_bytes`] reads any of them, telling them apart by how they start.
 //!
 //! # The model
 //!
@@ -74,7 +81,9 @@
 use std::fmt;
 
 pub mod json;
+pub mod sts;
 pub mod tdts;
+pub mod tnz;
 pub mod xdts;
 
 // The README's examples are compiled and run with the tests, so that the page
@@ -128,12 +137,16 @@ pub const OPTION_REFERENCEFRAME: &str = "OPTION_REFERENCEFRAME";
 pub enum Error {
     /// The text is not a sheet of this format.
     Parse(String),
+    /// The sheet has something the format being written cannot hold, and
+    /// writing it would mean writing something else in its place.
+    Unsupported(String),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Parse(s) => write!(f, "parse error: {s}"),
+            Error::Unsupported(s) => write!(f, "cannot be written: {s}"),
         }
     }
 }
@@ -402,7 +415,11 @@ pub struct TimeTable {
 /// back only into the format they were read from; see [`Sheet::read_from`].
 pub type Extra = Vec<(String, json::Value)>;
 
-/// Which of the two formats a sheet was read from.
+/// Which of the two JSON formats a sheet was read from.
+///
+/// STS and TNZ sheets are read with nothing this crate does not model kept
+/// beside them, so there is nothing to tie to a format and a sheet read from
+/// either has no `read_from`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
     /// XDTS.
@@ -536,16 +553,34 @@ impl Default for WriteOptions {
     }
 }
 
-/// Read a sheet from text in either format, by its header line.
+/// Read a sheet from text in any of the text formats — XDTS, TDTS, or an
+/// OpenToonz scene — by how it starts.
 pub fn from_str(text: &str) -> Result<Sheet, Error> {
     let trimmed = text.trim_start_matches('\u{feff}');
     let first = trimmed.split_once('\n').map(|(a, _)| a).unwrap_or(trimmed);
     match first.trim() {
         xdts::HEADER => xdts::from_str(text),
         tdts::HEADER => tdts::from_str(text),
+        _ if tnz::is_tnz(trimmed) => tnz::from_str(text),
         other => Err(Error::Parse(format!(
             "not a time sheet: first line is {other:?}"
         ))),
+    }
+}
+
+/// Read a sheet from a file's bytes, in any format this crate reads: STS by
+/// its signature, and the text formats as [`from_str`] tells them apart.
+///
+/// XDTS and TDTS must be UTF-8. A scene file is read even where it is not,
+/// because only its level names are text; see [`tnz::from_bytes`].
+pub fn from_bytes(bytes: &[u8]) -> Result<Sheet, Error> {
+    if sts::is_sts(bytes) {
+        return sts::from_bytes(bytes);
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(text) => from_str(text),
+        Err(_) if tnz::is_tnz(&String::from_utf8_lossy(bytes)) => tnz::from_bytes(bytes),
+        Err(e) => Err(Error::Parse(format!("not UTF-8 text: {e}"))),
     }
 }
 
