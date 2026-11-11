@@ -1,0 +1,6 @@
+# Format fixtures are kept byte for byte as the application wrote them: a
+# sheet saved by the 東映 digital timesheet is CRLF throughout, and that is
+# part of what these files are here to record. Without this, a checkout on a
+# platform that normalises line endings would quietly rewrite them.
+tests/data/*.tdts -text
+tests/data/*.xdts -text

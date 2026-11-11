@@ -1,0 +1,22 @@
+xdts
+Copyright 2026 xdts contributors
+
+This product includes software developed by the xdts contributors.
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The XDTS and TDTS readers and writers were first written for sheetscan-rs
+(Apache-2.0) and extracted here.
+
+---
+
+tests/data/real_v7.tdts, tests/data/real_v5.xdts
+
+  Synthetic sample sheets from the vdts-editor project, used here as
+  fixtures so that this crate's TDTS and XDTS output can be checked against
+  files a real application writes. Their contents are invented, not taken
+  from any production timesheet.
+
+  Copyright (c) 2026 lunafuse
+  https://github.com/lunafuse/vdts-editor
+  Licensed under the MIT License.
