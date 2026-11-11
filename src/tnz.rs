@@ -17,18 +17,32 @@
 //!   exposes no drawing level or sub-xsheet — a palette, an effect, a
 //!   dialogue column — is written as an empty column.
 //! * A drawing is its frame number without the padding, and its letter if it
-//!   has one: `0001` is `1`, `0012a` is `12a`. A level of one image with no
-//!   frame number (`-` in the file, a single `.tif`) is drawing `1`.
+//!   has one: `0001` is `1`, `0012a` is `12a`.
+//! * **The one place this differs from the export on purpose:** a level of
+//!   one image with no frame number (`-` in the file, a single `.tif`) is
+//!   drawing `1`. OpenToonz writes the internal number of "no frame" there,
+//!   `-2` (`fid2Str` in `xdtsio.cpp`), which every other application reads
+//!   as a drawing called −2.
 //! * A column that starts late gets [`NULL_CELL`] at frame 0, and every
 //!   column gets one on the frame after its last cell, as the export does.
 //! * The sheet is as long as the output range when one is set, and as the
 //!   scene otherwise.
+//! * In-between and key marks are read from **cell marks**, as the export
+//!   reads them: which mark means what is the export dialog's choice, and
+//!   [`CellMarks`] is that choice, its defaults the dialog's.
 //!
-//! Not read: in-between and key marks (OpenToonz keeps them as cell marks,
-//! and which mark means ○ is a choice its export dialog asks for), sub-xsheet
-//! contents, dialogue in sound text columns, and the frame rate. The time
-//! table has no name, because OpenToonz names it after the scene's file,
-//! which is not in the file.
+//! Beyond what the export writes, **dialogue** is read too: each sound text
+//! column becomes a column of the dialogue field, named after the column (or
+//! its level), with the speaker — that same name — and the line where the
+//! line starts and a hyphen on each frame it goes on. That layout is taken
+//! from the only sheet with dialogue at hand, `tests/data/synthetic_v5.xdts`
+//! — another editor's invented sample, so it is a shape to follow, not
+//! evidence of what an application expects. The column still takes its
+//! empty place among the cell columns, as in the export.
+//!
+//! Not read: sub-xsheet contents and the frame rate. The time table has no
+//! name, because OpenToonz names it after the scene's file, which is not in
+//! the file.
 //!
 //! # The file
 //!
@@ -43,8 +57,57 @@
 //! it names, and an exchange sheet does not have them. OpenToonz reads XDTS
 //! itself.
 
-use crate::{Error, Sheet, TimeTable, Track, NULL_CELL};
+use crate::{
+    Cell, Error, Field, Instruction, Sheet, TimeTable, Track, ValueTrack, HYPHEN, NULL_CELL,
+    OPTION_KEYFRAME, OPTION_REFERENCEFRAME, TICK_1, TICK_2,
+};
 use std::collections::HashMap;
+
+/// Which of the scene's cell marks stand for which XDTS symbol.
+///
+/// A cell mark is OpenToonz's coloured dot on a cell, numbered by its place
+/// in the scene's list of marks. Which mark means ○ is not in the file: the
+/// export dialog asks. The [`Default`] is what that dialog offers, on the
+/// scene's default list — Blue for ○, Purple for ●, Red for a key and Green
+/// for a reference — and `None` reads no symbol from marks at all.
+///
+/// As in the export, ○ and ● are read on a frame that holds the drawing
+/// before it, and the key and reference marks on a frame where a drawing
+/// starts; a key or reference mark makes the sheet need the p1 extension,
+/// which the XDTS writer then declares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CellMarks {
+    /// The mark that means ○ ([`TICK_1`]).
+    pub tick_1: Option<u32>,
+    /// The mark that means ● ([`TICK_2`]).
+    pub tick_2: Option<u32>,
+    /// The mark that means a key drawing ([`OPTION_KEYFRAME`]).
+    pub keyframe: Option<u32>,
+    /// The mark that means a reference drawing ([`OPTION_REFERENCEFRAME`]).
+    pub reference: Option<u32>,
+}
+
+impl Default for CellMarks {
+    /// The export dialog's defaults (`xdtsio.cpp`): marks 6, 8, 0 and 4.
+    fn default() -> Self {
+        Self {
+            tick_1: Some(6),
+            tick_2: Some(8),
+            keyframe: Some(0),
+            reference: Some(4),
+        }
+    }
+}
+
+impl CellMarks {
+    /// Read no symbols from marks.
+    pub const NONE: Self = Self {
+        tick_1: None,
+        tick_2: None,
+        keyframe: None,
+        reference: None,
+    };
+}
 
 /// Whether `text` starts like a scene file.
 pub fn is_tnz(text: &str) -> bool {
@@ -54,13 +117,18 @@ pub fn is_tnz(text: &str) -> bool {
 }
 
 /// Read a scene file from bytes. Invalid UTF-8 is replaced rather than
-/// refused, because only the level names are text that matters.
+/// refused, because only the level names and dialogue are text.
 pub fn from_bytes(bytes: &[u8]) -> Result<Sheet, Error> {
     from_str(&String::from_utf8_lossy(bytes))
 }
 
-/// Read a scene file.
+/// Read a scene file, with the export dialog's default [`CellMarks`].
 pub fn from_str(text: &str) -> Result<Sheet, Error> {
+    from_str_with(text, &CellMarks::default())
+}
+
+/// Read a scene file, reading the symbols from the marks given.
+pub fn from_str_with(text: &str, marks: &CellMarks) -> Result<Sheet, Error> {
     let root = parse(text)?;
     if root.tag != "tnz" {
         return Err(Error::Parse(format!(
@@ -75,27 +143,43 @@ pub fn from_str(text: &str) -> Result<Sheet, Error> {
     let xsheet = root
         .child("xsheet")
         .ok_or_else(|| Error::Parse("scene has no xsheet".into()))?;
+    let names = column_names(xsheet);
 
     let mut columns = Vec::new();
     let mut tracks = Vec::new();
+    let mut dialogue = Field::default();
     let mut last_row = 0usize;
-    for column in xsheet
-        .child("columns")
-        .map(|c| c.elements())
-        .into_iter()
-        .flatten()
-    {
+    let all = xsheet.child("columns").map(|c| c.elements());
+    for (index, column) in all.into_iter().flatten().enumerate() {
         if column.tag == "soundColumn" {
             continue;
         }
         let cells = match column.tag.as_str() {
             "levelColumn" | "meshColumn" => read_cells(column)?,
+            "soundTextColumn" => {
+                let lines = read_text_cells(column, &levels)?;
+                if let Some((_, r1, _)) = lines.last() {
+                    last_row = last_row.max(r1 + 1);
+                }
+                if !lines.is_empty() {
+                    let speaker = names.get(&index).cloned().unwrap_or_else(|| {
+                        lines
+                            .first()
+                            .and_then(|(_, _, (id, _))| levels.get(id))
+                            .map(|l| l.name.clone())
+                            .unwrap_or_default()
+                    });
+                    dialogue.tracks.push(dialogue_track(&lines, &speaker));
+                    dialogue.columns.push(speaker);
+                }
+                Vec::new()
+            }
             _ => Vec::new(),
         };
         if let Some((r1, _)) = cells.last() {
             last_row = last_row.max(r1 + 1);
         }
-        let (name, track) = build_column(&cells, &levels);
+        let (name, track) = build_column(&cells, &levels, &read_marks(column), marks);
         columns.push(name);
         tracks.push(track);
     }
@@ -117,6 +201,7 @@ pub fn from_str(text: &str) -> Result<Sheet, Error> {
             duration,
             columns,
             tracks,
+            dialogue,
             ..TimeTable::default()
         }],
         ..Sheet::default()
@@ -126,12 +211,114 @@ pub fn from_str(text: &str) -> Result<Sheet, Error> {
 /// What a cell refers to: a level's id and the frame as written.
 type CellRef = (String, String);
 
+/// One run of a dialogue column: its first and last row, the level's id and
+/// the line.
+type Line = (usize, usize, (String, String));
+
 /// A level, as far as a sheet needs it.
 struct Level {
     /// Whether it is a drawing level or a sub-xsheet, the two kinds the
     /// export writes.
     exposable: bool,
     name: String,
+    /// A dialogue level's lines, which its cells number from 1.
+    lines: Vec<String>,
+}
+
+/// The names columns were given (the pegbar `Col1` is column 0), where one
+/// was.
+fn column_names(xsheet: &Element) -> HashMap<usize, String> {
+    let mut out = HashMap::new();
+    for p in xsheet
+        .child("pegbars")
+        .map(|p| p.elements())
+        .into_iter()
+        .flatten()
+    {
+        let Some(n) = p.attr("id").and_then(|id| id.strip_prefix("Col")) else {
+            continue;
+        };
+        let (Ok(n), Some(name)) = (
+            n.parse::<usize>(),
+            p.child("name").and_then(|e| e.texts().next()),
+        ) else {
+            continue;
+        };
+        if n > 0 && !name.is_empty() {
+            out.insert(n - 1, name.to_string());
+        }
+    }
+    out
+}
+
+/// A column's cell marks: row, and the mark's number.
+fn read_marks(column: &Element) -> HashMap<usize, u32> {
+    let mut out = HashMap::new();
+    for m in column
+        .child("cellMarks")
+        .map(|m| m.elements())
+        .into_iter()
+        .flatten()
+    {
+        let Some(id) = m.attr("id").and_then(|id| id.parse().ok()) else {
+            continue;
+        };
+        for row in m.texts().flat_map(str::split_whitespace) {
+            if let Ok(row) = row.parse() {
+                out.insert(row, id);
+            }
+        }
+    }
+    out
+}
+
+/// A dialogue column's cells: first row, last row, and the line.
+fn read_text_cells(column: &Element, levels: &HashMap<String, Level>) -> Result<Vec<Line>, Error> {
+    let mut out = Vec::new();
+    let Some(cells) = column.child("cells") else {
+        return Ok(out);
+    };
+    for cell in cells.elements().filter(|c| c.tag == "cell") {
+        let bad = || Error::Parse("a dialogue cell is not \"rows line level\"".into());
+        let mut texts = cell.texts();
+        let rows = texts.next().ok_or_else(bad)?;
+        let line: usize = texts.next().and_then(|t| t.parse().ok()).ok_or_else(bad)?;
+        let id = cell
+            .elements()
+            .next()
+            .and_then(|l| l.attr("id"))
+            .ok_or_else(bad)?
+            .to_string();
+        let (r0, r1) = match rows.split_once('-') {
+            Some((a, b)) => (a.parse().map_err(|_| bad())?, b.parse().map_err(|_| bad())?),
+            None => {
+                let r = rows.parse().map_err(|_| bad())?;
+                (r, r)
+            }
+        };
+        let text = levels
+            .get(&id)
+            .and_then(|l| l.lines.get(line.wrapping_sub(1)))
+            .cloned()
+            .unwrap_or_default();
+        out.push((r0, r1, (id, text)));
+    }
+    out.sort_by_key(|(r0, _, _)| *r0);
+    Ok(out)
+}
+
+/// A dialogue column as the dialogue field has it: the speaker and the line
+/// where it starts, and the line held by a hyphen on every frame after; see
+/// the module documentation for where that shape comes from.
+fn dialogue_track(lines: &[Line], speaker: &str) -> ValueTrack {
+    let mut frames = Vec::new();
+    for (r0, r1, (_, text)) in lines {
+        frames.push((*r0, Instruction::from([speaker, text.as_str()])));
+        for r in r0 + 1..=*r1 {
+            frames.push((r, Instruction::from([HYPHEN])));
+        }
+    }
+    ValueTrack { frames }
 }
 
 /// Every level the scene defines, wherever it is defined. Ids are unique
@@ -142,6 +329,7 @@ fn collect_levels(e: &Element, out: &mut HashMap<String, Level>) {
             "level" => Some(Level {
                 exposable: true,
                 name: e.texts().next().unwrap_or_default().to_string(),
+                lines: Vec::new(),
             }),
             "childLevel" => Some(Level {
                 exposable: true,
@@ -150,10 +338,21 @@ fn collect_levels(e: &Element, out: &mut HashMap<String, Level>) {
                     .and_then(|n| n.texts().next())
                     .unwrap_or_default()
                     .to_string(),
+                lines: Vec::new(),
+            }),
+            "soundTextLevel" => Some(Level {
+                exposable: false,
+                name: e.texts().next().unwrap_or_default().to_string(),
+                lines: e
+                    .elements()
+                    .filter(|f| f.tag == "frame")
+                    .map(|f| f.texts().collect::<Vec<_>>().join(" "))
+                    .collect(),
             }),
             t if t.ends_with("Level") => Some(Level {
                 exposable: false,
                 name: String::new(),
+                lines: Vec::new(),
             }),
             _ => None,
         };
@@ -220,7 +419,12 @@ fn drawing(frame: &str, number: Option<i64>, letter: &str) -> String {
 }
 
 /// One column as the export builds it: its name, and its changes.
-fn build_column(cells: &[(usize, CellRef)], levels: &HashMap<String, Level>) -> (String, Track) {
+fn build_column(
+    cells: &[(usize, CellRef)],
+    levels: &HashMap<String, Level>,
+    column_marks: &HashMap<usize, u32>,
+    marks: &CellMarks,
+) -> (String, Track) {
     let Some(&(r0, _)) = cells.first() else {
         return (String::new(), Track::default());
     };
@@ -231,6 +435,9 @@ fn build_column(cells: &[(usize, CellRef)], levels: &HashMap<String, Level>) -> 
         .find(|id| levels.get(*id).is_some_and(|l| l.exposable));
     let Some(level) = level else {
         return (String::new(), Track::default());
+    };
+    let mark = |row: usize, which: Option<u32>| {
+        which.is_some() && column_marks.get(&row).copied() == which
     };
 
     let mut frames = Vec::new();
@@ -248,9 +455,21 @@ fn build_column(cells: &[(usize, CellRef)], levels: &HashMap<String, Level>) -> 
             _ => None,
         };
         if here == prev {
+            // A held drawing can carry ○ or ●.
+            if mark(row, marks.tick_1) {
+                frames.push((row, TICK_1.into()));
+            } else if mark(row, marks.tick_2) {
+                frames.push((row, TICK_2.into()));
+            }
             continue;
         }
-        frames.push((row, here.unwrap_or(NULL_CELL).into()));
+        let cell = match here {
+            None => Cell::from(NULL_CELL),
+            Some(v) if mark(row, marks.keyframe) => Cell::marked(v, [OPTION_KEYFRAME]),
+            Some(v) if mark(row, marks.reference) => Cell::marked(v, [OPTION_REFERENCEFRAME]),
+            Some(v) => Cell::from(v),
+        };
+        frames.push((row, cell));
         prev = here;
     }
     frames.push((r1 + 1, NULL_CELL.into()));

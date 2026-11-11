@@ -10,11 +10,10 @@
 
 ### 追加
 
-- **DiTiS** の独自形式（`.ditis` / `.json`）の読み書き：`ditis::from_str` / `ditis::to_string`。モデルに無いもの（FPS、挿入・無効行、取り込み元の文書など）も保って書き戻し、DiTiS が書いた新規シートはバイト単位で往復します
-
-- **STS**（シラヘイタイムシート、DiTiS）の読み書き：`sts::from_bytes` / `sts::to_bytes`。DiTiS が書くファイルとはバイト単位で往復し、元のアプリの読み方（256 コマ以上、Shift_JIS の列名）も読めます
-- **TNZ**（OpenToonz / Tahoma2D のシーン）の読み込み：`tnz::from_str` / `tnz::from_bytes`。OpenToonz 自身の XDTS 書き出しと同じ解釈でセル欄を取り出します
-- `from_bytes`：STS・XDTS・TDTS・TNZ を先頭で判別して読みます。`from_str` も TNZ を判別します
+- **DiTiS** の独自形式（`.ditis` / `.json`）の読み書き：`ditis::from_str` / `ditis::to_string`。モデルに無いもの（FPS、挿入・無効行、取り込み元の文書など）も保って書き戻し、DiTiS が書いた新規シートも XDTS から取り込んだシートもバイト単位で往復します
+- **STS**（シラヘイタイムシート、DiTiS）の読み書き：`sts::from_bytes` / `sts::to_bytes`。DiTiS が書くファイルとはバイト単位で往復し、元のアプリの読み方（256 コマ以上、漢字を含む Shift_JIS（CP932）の列名）も読めます
+- **TNZ**（OpenToonz / Tahoma2D のシーン）の読み込み：`tnz::from_str` / `tnz::from_bytes`。OpenToonz 自身の XDTS 書き出しと同じ解釈でセル欄を取り出し、セルマークから中割・原画の印を（`tnz::CellMarks`、`tnz::from_str_with`）、台詞列から台詞欄を読みます。番号のない1枚絵だけは OpenToonz の `"-2"` ではなく `1` にします
+- `from_bytes`：STS・XDTS・TDTS・DiTiS・TNZ を中身の先頭で判別して読みます。`from_str` も DiTiS と TNZ を判別します
 - `examples/convert.rs`：読める形式から書ける形式へ変換する例（`cargo run --example convert -- in.tnz out.xdts`）
 - `FORMATS.md`：形式ごとの根拠・確かめたこと・限界。`tools/check-ditis.mjs` で DiTiS のコードとの突き合わせを再現できます（パッケージには含めません）
 - `Error::Unsupported`：書き出す形式に置き場所がないものを、別の値に置き換えずに断るためのエラー

@@ -48,9 +48,9 @@
 |---|---|---|---|
 | XDTS | version 5 / 10。知らない version（実在する 11 など）も拒否しない | 5。カメラ位置があれば 10。p1 の印があれば `subversion: "p1"` | `csp_v5.xdts`（実物とバイト一致） |
 | TDTS | version 5（直下の `timeTables`）、7 以降（`timeSheets`） | 読んだ version（7 以上）。それ以外は 10 | `saved_v10.tdts`（実物とバイト一致） |
-| STS | 列数1バイト、コマ数・セルは u16。列名は UTF-8、それ以外は Shift_JIS | u16・UTF-8。DiTiS が書くファイルとバイト一致 | DiTiS の `generateStsBuffer` |
+| STS | 列数1バイト、コマ数・セルは u16。列名は UTF-8、それ以外は Shift_JIS（CP932） | u16・UTF-8。DiTiS が書くファイルとバイト一致 | DiTiS の `generateStsBuffer` |
 | DiTiS | `version` / `sheets`。古い `{id, name}` と `data` を ID で引く形も | 新規シートは DiTiS と同じキー・順序・インデント2 | DiTiS の `buildDitisJson` |
-| TNZ | トップ Xsheet のセル列 | **しない** | OpenToonz の `xdtsio.cpp` の解釈 |
+| TNZ | トップ Xsheet のセル列（セルマークの印を含む）と台詞列 | **しない** | OpenToonz の `xdtsio.cpp` の解釈（1枚絵の番号だけ意図して `1`） |
 
 ### 共通の規則
 
@@ -58,7 +58,7 @@
 - セルの値は**書かれた文字列のまま**持つ。`a0001`、`001`、`BG12` を数値に直さない（例外は TNZ のフレーム番号の桁埋めと STS の数値で、どちらもその形式の書き方による）
 - 記号は `SYMBOL_NULL_CELL`（×）、`SYMBOL_TICK_1`（○）、`SYMBOL_TICK_2`（●）、`SYMBOL_HYPHEN`（前の指示の継続）
 - **書けないものは別の値に置き換えない**。置き場所のない値は、その形式に書かない（XDTS の `episode`・`direction`、DiTiS の台詞・カメラ欄、STS の記号など。README の各節を参照）か、`Error::Unsupported` で断る（STS の `a0001` など）
-- 知らないキーは捨てずに `Extra` に保ち、**読んだ形式にだけ**書き戻す（`Sheet::read_from`）。対象は XDTS・TDTS・DiTiS
+- 知らないキーは捨てずに `Extra` に保ち、**読んだ形式にだけ**書き戻す（`Sheet::read_from`）。対象は XDTS・TDTS・DiTiS。DiTiS のシートでは、バイト単位で戻すためにモデルが持つキーも含めた全キーを順に保つ
 - 公開仕様に FPS は無い。FPS を持つのは DiTiS だけで、これは DiTiS のキーとして保つ
 - 形式の判別は**中身の先頭**で行い、拡張子は見ない（`from_bytes` / `from_str`）
 
@@ -80,7 +80,7 @@
 3. DiTiS で作った新規シートの `.ditis` が、バイト単位で同じに戻る
 4. その `.ditis` からこのクレートが書いた XDTS を DiTiS が取り込むと、同じセルになる
 5. このクレートが `.ditis` から読む変化点が、DiTiS 自身の XDTS 書き出しの指示と同じ。往復だけでは、`○` を記号に直さず文字列のまま通す誤りが見つからない（その誤りを入れると 1〜4 は通り、5 だけが落ちることを確認した）
-6. DiTiS が XDTS から取り込んだシートの `.ditis` が、セルと `timesheetSource`（取り込み元の文書）を保ったまま戻る
+6. DiTiS が XDTS から取り込んだシートの `.ditis`（`timesheetSource` を持つ）が、バイト単位で同じに戻る
 7. このクレートが XDTS から書いた `.ditis` を DiTiS が開くと、DiTiS が同じ XDTS を取り込んだときと同じセルになる
 8. このクレートが TNZ から書いた `.ditis` を DiTiS が開ける
 
@@ -93,14 +93,14 @@ TNZ は `cargo run --example convert -- scene.tnz out.xdts` で手元のシー�
 | XDTS | CLIP STUDIO PAINT EX の書き出し（v5）とバイト一致 | OpenToonz の `xdtsio.cpp`（p1） | `synthetic_v5.xdts`（読み込みのみ） |
 | TDTS | 東映 DTS の保存シート（v10）とバイト一致 | remaping / DiTiS（リビジョン、欄4） | `synthetic_v7.tdts`（読み込みのみ）、手で組んだ欄4 |
 | STS | — | DiTiS を実行（バイト一致）、remaping を読解 | remaping 形（u16・Shift_JIS）のファイル |
-| DiTiS | DiTiS のコードを実行（新規シートはバイト一致） | — | 古い `{id, name}` 形のファイル |
+| DiTiS | DiTiS のコードを実行（新規シート・取り込んだシートともバイト一致） | — | 古い `{id, name}` 形のファイル |
 | TNZ | 公式サンプル3本（OpenToonz 1.2.0、リポジトリ外） | OpenToonz のソースを読解 | `synthetic.tnz` |
 
 ### 限界
 
 - **TDTS**：仕様書が無く、実物は1枚（1シート1リビジョン、欄0にセル）です。リビジョン履歴と欄4の扱いは第三者の記述と手で組んだファイルだけに基づいていて、完全な準拠とは言えません
 - **XDTS**：実物との照合は CLIP STUDIO PAINT EX の version 5 です。アプリケーションが書いた version 10 のファイルは `tests/data/` にありません
-- **STS**：元のアプリケーションも、それが書いたファイルも手元に無く、元のアプリとの互換は remaping の実装を読んだことだけが根拠です。Shift_JIS の漢字は読めず U+FFFD になります（依存ゼロのため）。256 コマ以上のシートは DiTiS では開けません
-- **DiTiS**：動かしたのは DiTiS の関数で、アプリそのもの（Tauri の画面やファイル I/O）ではありません。XDTS から取り込まれたシートは、`frames` キーの位置と、列の末尾まで埋められた `×` が空になる点がバイト単位では変わります（DiTiS にとっては同じシート）。台詞・カメラ欄と p1 の印は書きません
-- **TNZ**：OpenToonz を動かして書き出した XDTS との突き合わせはしていません。根拠はソースの読解と、OpenToonz 1.2.0 で保存されたサンプル3本です。新しい版や Tahoma2D に固有の保存内容（暗黙のホールド、ストップフレームなど）は確かめていません。中割・原画の印（セルマーク）、サブ Xsheet の中身、台詞列、FPS は読みません。書き出しはしません
+- **STS**：元のアプリケーションも、それが書いたファイルも手元に無く、元のアプリとの互換は remaping の実装を読んだことだけが根拠です。Shift_JIS は CP932 として読み、変換表は Python の `cp932` コーデックから生成したものです（`python3 tools/gen-cp932.py` で再生成して一致を確かめられます）。256 コマ以上のシートは DiTiS では開けません
+- **DiTiS**：動かしたのは DiTiS の関数で、アプリそのもの（Tauri の画面やファイル I/O）ではありません。バイト単位の往復は、DiTiS の新規シートと XDTS から取り込んだシートの2つの形で確かめています。セルを変えた後の `data` はモデルから書き直すので、空のコマの `×` と `""` の区別はそこで失われます（DiTiS にとっては同じ）。台詞・カメラ欄と p1 の印は書きません
+- **TNZ**：OpenToonz を動かして書き出した XDTS との突き合わせはしていません。根拠はソースの読解と、OpenToonz 1.2.0 で保存されたサンプル3本です。新しい版や Tahoma2D に固有の保存内容（暗黙のホールド、ストップフレームなど）は確かめていません。セルマークは書き出しダイアログの既定の対応（`CellMarks::default()`）で読みますが、シートごとにマーク一覧を変えている場合は呼び出し側が対応を指定する必要があります。台詞列の並べ方は架空のサンプル1つに倣ったもので、CLIP STUDIO PAINT などで台詞として表示されるかは確かめていません。サブ Xsheet の中身と FPS は読みません。書き出しはしません
 - **テストデータ**：`tests/data/` の基準ファイルは、実物の形を写して中身を架空にしたものか、アプリケーションのコードに書かせたものです。制作シートそのものは入れていません。それぞれの出どころは NOTICE にあります
