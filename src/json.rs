@@ -152,10 +152,6 @@ fn indent(out: &mut String, n: usize) {
     }
 }
 
-fn is_scalar(v: &Value) -> bool {
-    !matches!(v, Value::Array(_) | Value::Object(_))
-}
-
 fn write_value(out: &mut String, v: &Value, depth: usize, pretty: bool) {
     match v {
         Value::Null => out.push_str("null"),
@@ -163,8 +159,9 @@ fn write_value(out: &mut String, v: &Value, depth: usize, pretty: bool) {
         Value::Number(n) => out.push_str(&fmt_num(*n)),
         Value::String(s) => escape(out, s),
         Value::Array(a) => {
-            // arrays of scalars stay on one line for readability
-            if !pretty || a.iter().all(is_scalar) {
+            // The applications put every element on its own line, however
+            // small; a saved sheet is matched byte for byte only this way.
+            if !pretty || a.is_empty() {
                 out.push('[');
                 for (i, x) in a.iter().enumerate() {
                     if i > 0 {
