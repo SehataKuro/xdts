@@ -368,7 +368,11 @@ fn rewriting_a_saved_sheet_gives_the_same_bytes() {
         let text = fixture(name).replace("\r\n", "\n");
         let (head, body) = text.split_once('\n').unwrap();
         let v = json::parse(body).expect("fixture parses");
-        let written = if pretty { v.to_pretty() } else { v.to_compact() };
+        let written = if pretty {
+            v.to_pretty()
+        } else {
+            v.to_compact()
+        };
         assert_eq!(
             written.trim_end(),
             body.trim_end(),
