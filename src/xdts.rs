@@ -92,21 +92,22 @@ fn time_table(t: &TimeTable, sheet: &Sheet) -> Value {
                 .with("fieldId", FIELD_CELL)
                 .with("tracks", Value::Array(tracks))]),
         )
-        .with("name", t.name.as_str())
-        .with(
-            "timeTableHeaders",
-            Value::Array(vec![Value::obj()
-                .with("fieldId", FIELD_CELL)
-                .with("names", Value::Array(names))]),
-        );
+        .with("name", t.name.as_str());
     // Not in the published schema and not written by every application, but
     // an unknown key is accepted and the alternative is dropping a name the
     // caller has in hand. Left out entirely when there is none, so a sheet
-    // with no operator is byte for byte what the schema describes.
+    // with no operator is byte for byte what the schema describes. It sits
+    // here, in its alphabetical place, because that is the order the files
+    // these are read beside put their keys in.
     if !sheet.operator.is_empty() {
         v = v.with("operatorName", sheet.operator.as_str());
     }
-    v
+    v.with(
+        "timeTableHeaders",
+        Value::Array(vec![Value::obj()
+            .with("fieldId", FIELD_CELL)
+            .with("names", Value::Array(names))]),
+    )
 }
 
 pub fn header(sheet: &Sheet) -> Value {
