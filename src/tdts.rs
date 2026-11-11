@@ -28,13 +28,20 @@
 //! wrapper, so `timeSheets` carrying `version: 5` is a shape no reader
 //! expects. [`from_str`] accepts both.
 //!
-//! Cell data goes in field 0, exactly as in XDTS. The dialogue and camerawork
-//! columns and the work slip are written empty: this crate has nothing to put
-//! in them, and the application expects the structure to be there.
+//! Cell data goes in field 0, exactly as in XDTS, and the dialogue and
+//! camerawork fields are written where the sheet has them. A converter whose
+//! TDTS column ids this crate was checked against calls field 0 ACTION and
+//! field 4 CELL, and says the application shows field 4 in preference to
+//! field 0 where both have data; the sheet in `tests/data/` has its cells in
+//! field 0 and nothing in field 4, which is what this crate writes.
+//!
+//! Fields 1, 2 and 4 and the work slip are written as the empty structure the
+//! application saves: this crate has nothing to put in them, and a file
+//! without them is not the format.
 
 use crate::json::{self, Value};
 use crate::xdts;
-use crate::{Error, Sheet, TimeTable, WriteOptions, FIELD_CELL};
+use crate::{Error, Sheet, TimeTable, WriteOptions, FIELD_CAMERA, FIELD_CELL, FIELD_DIALOG};
 
 pub const HEADER: &str = "toeiDigitalTimeSheet Save Data";
 
@@ -76,61 +83,66 @@ fn empty_work_slip() -> Value {
     };
     Value::obj()
         .with("memo", "")
-        .with("processes", Value::Array((0..3).map(|_| process()).collect()))
+        .with(
+            "processes",
+            Value::Array((0..3).map(|_| process()).collect()),
+        )
         .with("works", Value::Array((0..2).map(|_| work()).collect()))
 }
 
-/// Headers for fields 0..=5. Only field 0 carries real names; the rest are
-/// the application's defaults for the columns this crate does not fill.
-fn headers(names: Vec<Value>) -> Value {
+/// Column names, or the application's own defaults for a field this sheet
+/// has nothing in. Unlike XDTS, every field 0..=5 gets a header entry
+/// whether or not it is used.
+fn names_or(columns: &[String], default: &[&str]) -> Value {
+    if columns.is_empty() {
+        strings(default)
+    } else {
+        Value::Array(columns.iter().map(|n| Value::from(n.as_str())).collect())
+    }
+}
+
+/// Headers for fields 0..=5. Fields 1, 2 and 4 are the application's
+/// defaults: this crate has no model for them.
+fn headers(t: &TimeTable) -> Value {
     Value::Array(vec![
         Value::obj()
             .with("fieldId", 0u32)
-            .with("names", Value::Array(names)),
-        Value::obj().with("fieldId", 1u32).with("names", strings(&[""])),
-        Value::obj().with("fieldId", 2u32).with("names", strings(&[""])),
+            .with("names", names_or(&t.columns, &[])),
+        Value::obj()
+            .with("fieldId", 1u32)
+            .with("names", strings(&[""])),
+        Value::obj()
+            .with("fieldId", 2u32)
+            .with("names", strings(&[""])),
         Value::obj()
             .with("fieldId", 3u32)
-            .with("names", strings(&["S1", "S2"])),
+            .with("names", names_or(&t.dialogue.columns, &["S1", "S2"])),
         Value::obj()
             .with("fieldId", 4u32)
             .with("names", Value::Array(Vec::new())),
         Value::obj()
             .with("fieldId", 5u32)
-            .with("names", strings(&["1", "2"])),
+            .with("names", names_or(&t.camera.columns, &["1", "2"])),
     ])
 }
 
-/// One frame entry. Unlike XDTS, `data` carries a `fontColorId`.
-fn frame_entry(frame: usize, value: &str) -> Value {
-    Value::obj()
-        .with(
-            "data",
-            Value::Array(vec![Value::obj()
-                .with("fontColorId", 0u32)
-                .with("id", 0u32)
-                .with("values", Value::Array(vec![value.into()]))]),
-        )
-        .with("frame", frame)
-}
+/// Unlike XDTS, `data` carries a `fontColorId` before the instruction type.
+const FONT_COLOR: Option<(&str, u32)> = Some(("fontColorId", 0));
 
 fn time_table(t: &TimeTable, sheet: &Sheet, index: usize) -> Value {
-    let tracks: Vec<Value> = t
-        .tracks
-        .iter()
-        .enumerate()
-        .map(|(i, tr)| {
-            let frames: Vec<Value> = tr
-                .frames
-                .iter()
-                .map(|(f, v)| frame_entry(*f, v))
-                .collect();
-            Value::obj()
-                .with("frames", Value::Array(frames))
-                .with("trackNo", i)
-        })
-        .collect();
-    let names: Vec<Value> = t.columns.iter().map(|n| Value::from(n.as_str())).collect();
+    let mut fields = vec![Value::obj().with("fieldId", FIELD_CELL).with(
+        "tracks",
+        xdts::field_tracks(xdts::cell_frames(t, FONT_COLOR)),
+    )];
+    for (id, f) in [(FIELD_DIALOG, &t.dialogue), (FIELD_CAMERA, &t.camera)] {
+        if f.is_empty() {
+            continue;
+        }
+        fields.push(Value::obj().with("fieldId", id).with(
+            "tracks",
+            xdts::field_tracks(xdts::value_frames(f, FONT_COLOR)),
+        ));
+    }
     // Keys in the order a sheet saved by the application has them.
     Value::obj()
         .with(
@@ -142,15 +154,10 @@ fn time_table(t: &TimeTable, sheet: &Sheet, index: usize) -> Value {
         .with("color", 0u32)
         .with("direction", "")
         .with("duration", t.duration.max(1))
-        .with(
-            "fields",
-            Value::Array(vec![Value::obj()
-                .with("fieldId", FIELD_CELL)
-                .with("tracks", Value::Array(tracks))]),
-        )
+        .with("fields", Value::Array(fields))
         .with("name", format!("sheet{}", index + 1))
         .with("operatorName", sheet.operator.as_str())
-        .with("timeTableHeaders", headers(names))
+        .with("timeTableHeaders", headers(t))
 }
 
 /// The sheet header. Unlike XDTS this has somewhere to put the episode.

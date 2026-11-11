@@ -7,7 +7,7 @@
 //! from the vdts-editor project (MIT; see NOTICE), and the tests below demand
 //! that what this crate writes has the same keys.
 
-use xdts::{json, tdts, xdts as x, Sheet, TimeTable, Track, WriteOptions};
+use xdts::{json, tdts, xdts as x, Field, Sheet, TimeTable, Track, ValueTrack, WriteOptions};
 
 fn sample() -> Sheet {
     Sheet {
@@ -41,8 +41,47 @@ fn sample() -> Sheet {
                     ],
                 },
             ],
+            ..TimeTable::default()
         }],
     }
+}
+
+/// The same sheet with a line and a camera move, the camera move carrying the
+/// position that only version 10 has room for.
+fn sample_with_camera() -> Sheet {
+    let mut s = sample();
+    let t = &mut s.tables[0];
+    t.dialogue = Field {
+        columns: vec!["S1".into()],
+        tracks: vec![ValueTrack {
+            frames: vec![
+                (0, vec!["A".into(), "おはよう".into()]),
+                (4, vec![xdts::HYPHEN.into()]),
+            ],
+        }],
+    };
+    t.camera = Field {
+        columns: vec!["1".into()],
+        tracks: vec![ValueTrack {
+            frames: vec![
+                (
+                    0,
+                    ["T.U.", "0", "0", "100", "0", "0", "0"]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                ),
+                (
+                    11,
+                    ["SYMBOL_HYPHEN", "120", "-40", "150", "15", "10", "5"]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                ),
+            ],
+        }],
+    };
+    s
 }
 
 fn fixture(name: &str) -> String {
@@ -128,7 +167,10 @@ fn tdts_is_version_7_and_not_xdts() {
     }
     assert!(text.contains("\"fontColorId\": 0"), "no fontColorId");
     assert!(text.contains("\"workSlip\""), "no work slip");
-    assert!(!text.replace("\r\n", "").contains('\n'), "a bare LF got out");
+    assert!(
+        !text.replace("\r\n", "").contains('\n'),
+        "a bare LF got out"
+    );
 }
 
 /// A version 5 TDTS has its time tables at the top level, with no wrapper.
@@ -149,8 +191,14 @@ fn tdts_has_the_same_keys_as_a_real_sheet() {
     let real = paths_of(&fixture("real_v7.tdts"));
     let missing: Vec<&String> = real.iter().filter(|p| !mine.contains(p)).collect();
     let extra: Vec<&String> = mine.iter().filter(|p| !real.contains(p)).collect();
-    assert!(missing.is_empty(), "a real sheet has and we do not: {missing:?}");
-    assert!(extra.is_empty(), "we write and a real sheet does not: {extra:?}");
+    assert!(
+        missing.is_empty(),
+        "a real sheet has and we do not: {missing:?}"
+    );
+    assert!(
+        extra.is_empty(),
+        "we write and a real sheet does not: {extra:?}"
+    );
 }
 
 /// Our XDTS has every key a real one has, and the only thing beyond it is
@@ -165,7 +213,10 @@ fn xdts_has_the_keys_a_real_sheet_has() {
         .iter()
         .filter(|p| !real.contains(p) && *p != "/timeTables[]/operatorName")
         .collect();
-    assert!(missing.is_empty(), "a real sheet has and we do not: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "a real sheet has and we do not: {missing:?}"
+    );
     assert!(extra.is_empty(), "unexpected keys: {extra:?}");
 }
 
@@ -217,9 +268,89 @@ fn compact_output_is_the_same_document() {
     let compact = x::to_string(&s, &WriteOptions { pretty: false });
     // The header line always ends in a newline; the body is what collapses.
     let body = compact.split_once('\n').unwrap().1;
-    assert!(!body.trim_end().contains('\n'), "the body is not on one line");
+    assert!(
+        !body.trim_end().contains('\n'),
+        "the body is not on one line"
+    );
     assert_eq!(
         x::from_str(&compact).unwrap(),
         x::from_str(&x::to_string(&s, &WriteOptions::default())).unwrap()
     );
+}
+
+/// Version 5 is what a sheet without camera coordinates says, because that is
+/// the version every reader has. Nothing in a cells-only sheet needs 10.
+#[test]
+fn a_sheet_without_a_camera_is_still_version_5() {
+    let text = x::to_string(&sample(), &WriteOptions::default());
+    assert!(text.contains("\"version\": 5"), "not version 5");
+    assert_eq!(x::version(&sample()), 5);
+}
+
+/// The 2022 specification widened `version` to [5, 10] and grew the
+/// camerawork field's values from the direction alone to the direction plus
+/// the camera position. A sheet that uses the position is therefore a version
+/// 10 sheet, and saying 5 would be a lie about what is inside.
+#[test]
+fn camera_coordinates_make_it_version_10() {
+    let s = sample_with_camera();
+    assert_eq!(x::version(&s), 10);
+    let text = x::to_string(&s, &WriteOptions::default());
+    assert!(text.contains("\"version\": 10"), "not version 10");
+
+    let back = x::from_str(&text).unwrap();
+    assert_eq!(back.tables[0].camera, s.tables[0].camera);
+    assert_eq!(back.tables[0].dialogue, s.tables[0].dialogue);
+    // All seven values of the move survive, in order.
+    assert_eq!(
+        back.tables[0].camera.tracks[0].at(11).unwrap(),
+        ["SYMBOL_HYPHEN", "120", "-40", "150", "15", "10", "5"]
+    );
+}
+
+/// A camera move with only a direction is what version 5 always allowed, so
+/// it does not force the newer version on a reader that cannot take it.
+#[test]
+fn a_direction_on_its_own_is_still_version_5() {
+    let mut s = sample_with_camera();
+    for t in &mut s.tables {
+        t.camera.tracks[0].frames = vec![(0, vec!["T.U.".into()]), (11, vec![xdts::HYPHEN.into()])];
+    }
+    assert_eq!(x::version(&s), 5);
+    let back = x::from_str(&x::to_string(&s, &WriteOptions::default())).unwrap();
+    assert_eq!(back.tables[0].camera, s.tables[0].camera);
+}
+
+/// The dialogue and camerawork fields are written and read, in both formats,
+/// so a sheet does not lose them by passing through this crate.
+#[test]
+fn the_other_two_fields_survive_both_formats() {
+    let s = sample_with_camera();
+    let o = WriteOptions::default();
+    for back in [
+        x::from_str(&x::to_string(&s, &o)).unwrap(),
+        tdts::from_str(&tdts::to_string(&s, &o)).unwrap(),
+    ] {
+        assert_eq!(back.tables[0].dialogue, s.tables[0].dialogue);
+        assert_eq!(back.tables[0].camera, s.tables[0].camera);
+        // And the cells are still the cells.
+        assert_eq!(back.tables[0].tracks, s.tables[0].tracks);
+    }
+}
+
+/// The columns this crate never filled before are a real sheet's columns too,
+/// and the fixtures have them.
+#[test]
+fn a_real_sheet_keeps_its_dialogue_and_camera() {
+    for text in [fixture("real_v7.tdts"), fixture("real_v5.xdts")] {
+        let once = xdts::from_str(&text).unwrap();
+        let t = &once.tables[0];
+        assert!(!t.dialogue.is_empty(), "no dialogue was read");
+        assert!(!t.camera.is_empty(), "no camerawork was read");
+        assert_eq!(t.dialogue.columns, ["S1", "S2"]);
+
+        let rewritten = xdts::from_str(&tdts::to_string(&once, &WriteOptions::default())).unwrap();
+        assert_eq!(rewritten.tables[0].dialogue, t.dialogue);
+        assert_eq!(rewritten.tables[0].camera, t.camera);
+    }
 }

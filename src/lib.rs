@@ -32,6 +32,7 @@
 //!                 (24, xdts::NULL_CELL.into()),
 //!             ],
 //!         }],
+//!         ..TimeTable::default()
 //!     }],
 //!     ..Sheet::default()
 //! };
@@ -45,6 +46,21 @@
 //! A cell's value is the drawing number as written, or one of the special
 //! strings: [`NULL_CELL`] (×, an empty cell), [`TICK_1`] (○), [`TICK_2`] (●)
 //! and [`HYPHEN`] (continue the previous instruction).
+//!
+//! # Fields and versions
+//!
+//! A time table has three fields: cells ([`FIELD_CELL`]), dialogue
+//! ([`FIELD_DIALOG`]) and camerawork ([`FIELD_CAMERA`]). Cells are a column
+//! of single values, so they are [`Track`]s; the other two carry a list per
+//! change point and are [`Field`]s of [`ValueTrack`]s. All three are read and
+//! written, so a sheet does not lose its dialogue or its camera moves by
+//! passing through this crate.
+//!
+//! XDTS has two published versions, and the difference between them is
+//! exactly one thing: version 10 (2022-12-06) lets a camerawork instruction
+//! carry the camera position after the direction, where version 5
+//! (2018-11-29) had only the direction. [`xdts::version`] picks the lower
+//! version that can hold a given sheet, and [`xdts::to_string`] writes it.
 
 #![forbid(unsafe_code)]
 
@@ -107,15 +123,75 @@ impl Track {
     }
 }
 
+/// One column of a field whose instructions carry more than one value.
+///
+/// The cell field holds a single string per change point, which is what
+/// [`Track`] is for. The other two fields hold a list, in the order the
+/// specification gives:
+///
+/// * dialogue ([`FIELD_DIALOG`]) — the speaker, then the line (1–2 values)
+/// * camerawork ([`FIELD_CAMERA`]) — the direction, then, from XDTS version
+///   10, the camera position X and Y, the magnification percentage, the
+///   rotation angle, and the camera centre X and Y (1–7 values)
+///
+/// A list that stops early is what the file had; nothing is padded. Every
+/// value is the string as written, because that is all the format says it is.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ValueTrack {
+    pub frames: Vec<(usize, Vec<String>)>,
+}
+
+impl ValueTrack {
+    /// The values in effect at `frame`, if any.
+    pub fn at(&self, frame: usize) -> Option<&[String]> {
+        self.frames
+            .iter()
+            .rfind(|(f, _)| *f <= frame)
+            .map(|(_, v)| v.as_slice())
+    }
+}
+
+/// The dialogue or camerawork field of one time table: its column names and
+/// its columns.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Field {
+    /// Column names, indexed by track number.
+    pub columns: Vec<String>,
+    pub tracks: Vec<ValueTrack>,
+}
+
+impl Field {
+    /// Whether there is nothing here to write. A field like this is left out
+    /// of the file rather than written as an empty shell.
+    pub fn is_empty(&self) -> bool {
+        self.tracks.iter().all(|t| t.frames.is_empty())
+    }
+
+    /// Whether any instruction carries more than the first value — for
+    /// camerawork, whether the camera position is there, which is what makes
+    /// a sheet version 10 rather than version 5.
+    pub fn has_extra_values(&self) -> bool {
+        self.tracks
+            .iter()
+            .flat_map(|t| &t.frames)
+            .any(|(_, v)| v.len() > 1)
+    }
+}
+
 /// One sheet of a cut: its length, its column names and its columns.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TimeTable {
     pub name: String,
     /// Length in frames. At least 1 in a valid file.
     pub duration: usize,
-    /// Column names, indexed by track number.
+    /// Cell column names, indexed by track number.
     pub columns: Vec<String>,
+    /// The cell field ([`FIELD_CELL`]).
     pub tracks: Vec<Track>,
+    /// The dialogue field ([`FIELD_DIALOG`]). Empty unless a file had one.
+    pub dialogue: Field,
+    /// The camerawork field ([`FIELD_CAMERA`]). Empty unless a file had one.
+    pub camera: Field,
 }
 
 /// A whole document: the sheet header and its time tables.
@@ -194,6 +270,7 @@ mod tests {
                 tracks: vec![Track {
                     frames: vec![(0, "1".into())],
                 }],
+                ..TimeTable::default()
             }],
             ..Sheet::default()
         };
