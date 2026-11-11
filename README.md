@@ -113,15 +113,16 @@ TDTS には書き出しません。TDTS は別の形式で、東映 DTS がこ�
 
 | | XDTS | TDTS |
 |---|---|---|
-| `version` | 5 | **7** |
+| `version` | 5 または 10 | **10** |
 | シートの入れ物 | 直下の `timeTables` | **`timeSheets` で包む** |
-| 書き出す改行 | LF | **CRLF** |
+| 書き出し | LF・インデント2 | LF・**インデント4** |
 | `data[]` | `id`, `values` | **`fontColorId`** が付く |
+| 包み | — | `timeSheets` の中に **`free`** が並ぶ |
 | `timeTableHeaders` | 書いた欄だけ | **0〜5 の全欄** |
-| シートヘッダ | `cut`, `scene` | `episode`, `showHeaderDummy`, `timeTableFontColors`, `workSlip` が付く |
-| タイムテーブル | `duration`, `name`, `fields`, `timeTableHeaders` | `books`, `color`, `direction` が付く |
+| シートヘッダ | `cut`, `scene` | `episode`, `showHeadDummy`, `timeTableFontColors`, `workSlip` が付く |
+| タイムテーブル | `duration`, `name`, `fields`, `timeTableHeaders` | `color`, `direction`, `headDummykomas`, `footDummykomas` が付く |
 
-改行について補足すると、読み込みはどちらの改行も BOM も受け付けます。TDTS を CRLF で書くのは、アプリケーション自身のシートがそうであるという理解に基づくものですが、**このリポジトリの中にその根拠はありません**（`tests/data/` の2つは合成データで、どちらも LF・BOM なしです。NOTICE を参照）。構造の裏付けにはなりますが、改行の裏付けにはなりません。
+改行は **LF、BOM なし、インデントは4スペース**です。これはアプリケーションが実際に保存したシートを確認した結果で、以前このクレートが CRLF で書いていたのは誤りでした。読み込みは CRLF も BOM も受け付けます。
 
 TDTS の version 5 は古い形式で、`timeTables` が直下にあり包みがありません。`from_str` はどちらも読みます。
 
@@ -141,9 +142,11 @@ TDTS が持っていて XDTS が持たないもの——`episode`、`direction`�
 
 公開仕様に FPS の属性はありません。
 
-`cut` と `scene` は公開スキーマでは `\d{1,4}` ですが、**書かれた値をそのまま出力します**。JSON Schema の `pattern` はアンカーなしの検索なので `C-112` も `12345` もこのパターンを満たしますし、数字を1つも含まない値の場合は空文字列にしても（`""` も `\d{1,4}` にマッチしないので）適合にはならず、番号だけが失われます。実際 `tests/data/real_v5.xdts` は `"scene": ""` を持っています——アプリケーション自身が、自分のパターンが拒否する値を書いているわけです。仕様より厳しいリーダーに拒否されるのは目に見えて直せますが、カット番号が黙って書き換わるのは直せません。数字だけに落としたい場合は `xdts::header_number()` を呼んでください。
+`cut` と `scene` は公開スキーマでは `\d{1,4}` ですが、**書かれた値をそのまま出力します**。JSON Schema の `pattern` はアンカーなしの検索なので `C-112` も `12345` もこのパターンを満たしますし、数字を1つも含まない値の場合は空文字列にしても（`""` も `\d{1,4}` にマッチしないので）適合にはならず、番号だけが失われます。実際 `tests/data/synthetic_v5.xdts` は `"scene": ""` を持っています——アプリケーション自身が、自分のパターンが拒否する値を書いているわけです。仕様より厳しいリーダーに拒否されるのは目に見えて直せますが、カット番号が黙って書き換わるのは直せません。数字だけに落としたい場合は `xdts::header_number()` を呼んでください。
 
 ## 正しさの確かめ方
+
+TDTS 側の基準は `tests/data/saved_v10.tdts` です。これはこのクレートが書き出したファイルですが、**キー構成・キー順・インデント・改行を、アプリケーションが実際に保存したシートとバイト単位で突き合わせて確認**しています（そのシート自体と中身は入っていません。NOTICE を参照）。合成データの `synthetic_v7.tdts` は読み込みのテストにのみ使います——これを書き出しの基準にしていたために、このクレートは存在しないキー `showHeaderDummy` を書き続けていました。
 
 XDTS には[公開スキーマ](https://github.com/shun-iwasawa/XDTS-uext)（[version 10 の原文 PDF](https://vd.clipstudio.net/clipcontent/paint/app/ToeiAnimation/XDTSFileFormat_ver10_en.pdf)）がありますが、**TDTS には仕様書がありません**。そこで `tests/data/` に**実際のアプリケーションが保存したシート**を置き、書き出した JSON の**キー構成が完全に一致する**ことを両方向で検証しています。
 

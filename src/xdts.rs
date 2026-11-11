@@ -467,6 +467,11 @@ fn cells_from_value(tt: &Value, id: u32) -> (Vec<Track>, usize) {
     (tracks, max_frame)
 }
 
+/// A count that cannot be negative.
+fn count(tt: &Value, key: &str) -> usize {
+    tt.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0).max(0.0) as usize
+}
+
 /// Decode one `timeTables[]` entry, all three fields of it.
 ///
 /// Cells become [`Track`]s of [`Cell`]s, since one change point is one value
@@ -507,13 +512,15 @@ pub fn time_table_from_value(tt: &Value) -> TimeTable {
         // ones beside it.
         revisions: Vec::new(),
         // TDTS keys, read here because both formats' time tables are decoded
-        // by this one function. XDTS has neither and simply has none.
+        // by this one function. XDTS has none of them and simply has none.
         color: tt
             .get("color")
             .and_then(|c| c.as_f64())
             .unwrap_or(0.0)
             .max(0.0) as u32,
         direction: tt.get("direction").map(|d| d.to_text()).unwrap_or_default(),
+        head_dummy: count(tt, "headDummykomas"),
+        foot_dummy: count(tt, "footDummykomas"),
     }
 }
 

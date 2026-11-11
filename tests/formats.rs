@@ -3,9 +3,14 @@
 //! Neither format has a specification this crate can check itself against —
 //! XDTS has a published schema but TDTS has nothing at all — so the next best
 //! thing is the *shape* of a file the software itself produced.
-//! `tests/data/real_v7.tdts` and `real_v5.xdts` are synthetic sample sheets
-//! from the vdts-editor project (MIT; see NOTICE), and the tests below demand
-//! that what this crate writes has the same keys.
+//! `tests/data/saved_v10.tdts` is the shape of a sheet the 東映 digital
+//! timesheet itself saved, checked against a real one key for key and byte
+//! for byte and holding none of its contents (see NOTICE), and it is the TDTS
+//! reference. `synthetic_v7.tdts` and `synthetic_v5.xdts` are another
+//! editor's invented samples (MIT; see NOTICE): they are read here, and the
+//! XDTS one is the key reference for want of a real XDTS file, but the TDTS
+//! one is not a reference for anything — following it is how this crate came
+//! to write a key no saved sheet has.
 
 use xdts::{
     json, tdts, xdts as x, Cell, Field, Sheet, TimeTable, Track, ValueTrack, WriteOptions,
@@ -145,7 +150,7 @@ fn xdts_round_trip() {
 fn tdts_round_trip() {
     let s = sample();
     let text = tdts::to_string(&s, &WriteOptions::default());
-    assert!(text.starts_with("toeiDigitalTimeSheet Save Data\r\n"));
+    assert!(text.starts_with("toeiDigitalTimeSheet Save Data\n"));
     let back = tdts::from_str(&text).unwrap();
     assert_eq!(back.cut, "12");
     assert_eq!(back.tables[0].tracks, s.tables[0].tracks);
@@ -154,13 +159,13 @@ fn tdts_round_trip() {
     assert_eq!(back.operator, "nobody");
 }
 
-/// TDTS is version 7 and wraps its sheets. `timeSheets` with `version: 5` is
-/// a shape no reader expects, and is the mistake this crate exists to stop
-/// being made twice.
+/// TDTS wraps its sheets and is not XDTS with another header line. Writing
+/// `timeSheets` with `version: 5` is a shape no reader expects, and is the
+/// mistake this crate exists to stop being made twice.
 #[test]
-fn tdts_is_version_7_and_not_xdts() {
+fn tdts_is_not_xdts() {
     let text = tdts::to_string(&sample(), &WriteOptions::default());
-    assert!(text.contains("\"version\": 7"), "not version 7");
+    assert!(text.contains("\"version\": 10"), "not version 10");
     assert!(text.contains("\"timeSheets\": ["), "sheets are not wrapped");
     for id in 0..=5 {
         assert!(
@@ -170,10 +175,15 @@ fn tdts_is_version_7_and_not_xdts() {
     }
     assert!(text.contains("\"fontColorId\": 0"), "no fontColorId");
     assert!(text.contains("\"workSlip\""), "no work slip");
-    assert!(
-        !text.replace("\r\n", "").contains('\n'),
-        "a bare LF got out"
-    );
+    assert!(text.contains("\"free\""), "no free");
+    // `showHeadDummy`, as a saved sheet spells it, and the dummy frame counts
+    // it spells the same way.
+    assert!(text.contains("\"showHeadDummy\""), "no showHeadDummy");
+    assert!(!text.contains("showHeaderDummy"), "the misspelling got out");
+    assert!(text.contains("\"headDummykomas\""), "no headDummykomas");
+    // And not `books`, which a saved sheet does not have.
+    assert!(!text.contains("books"), "books got out");
+    assert!(!text.contains('\r'), "a CR got out");
 }
 
 /// A version 5 TDTS has its time tables at the top level, with no wrapper.
@@ -185,13 +195,18 @@ fn a_version_5_tdts_is_still_read() {
 }
 
 /// Our TDTS has exactly the keys a sheet saved by the application has — no
-/// more and no less. The furniture (`workSlip`, `books`,
+/// more and no less. The furniture (`workSlip`, `free`,
 /// `timeTableFontColors`, the headers for columns this crate never fills) is
 /// not optional decoration: a file without it is not the format.
+///
+/// The reference is `saved_v10.tdts`, whose shape was taken from a sheet the
+/// application itself saved. It is deliberately not `synthetic_v7.tdts`:
+/// that file is another editor's invention, and following it is how this
+/// crate came to write `showHeaderDummy`, a key no saved sheet has.
 #[test]
-fn tdts_has_the_same_keys_as_a_real_sheet() {
+fn tdts_has_the_same_keys_as_a_saved_sheet() {
     let mine = paths_of(&tdts::to_string(&sample(), &WriteOptions::default()));
-    let real = paths_of(&fixture("real_v7.tdts"));
+    let real = paths_of(&fixture("saved_v10.tdts"));
     let missing: Vec<&String> = real.iter().filter(|p| !mine.contains(p)).collect();
     let extra: Vec<&String> = mine.iter().filter(|p| !real.contains(p)).collect();
     assert!(
@@ -210,7 +225,7 @@ fn tdts_has_the_same_keys_as_a_real_sheet() {
 #[test]
 fn xdts_has_the_keys_a_real_sheet_has() {
     let mine = paths_of(&x::to_string(&sample(), &WriteOptions::default()));
-    let real = paths_of(&fixture("real_v5.xdts"));
+    let real = paths_of(&fixture("synthetic_v5.xdts"));
     let missing: Vec<&String> = real.iter().filter(|p| !mine.contains(p)).collect();
     let extra: Vec<&String> = mine
         .iter()
@@ -229,7 +244,7 @@ fn xdts_without_an_operator_is_exactly_the_schema() {
     let mut s = sample();
     s.operator.clear();
     let mine = paths_of(&x::to_string(&s, &WriteOptions::default()));
-    let real = paths_of(&fixture("real_v5.xdts"));
+    let real = paths_of(&fixture("synthetic_v5.xdts"));
     let extra: Vec<&String> = mine.iter().filter(|p| !real.contains(p)).collect();
     assert!(extra.is_empty(), "unexpected keys: {extra:?}");
 }
@@ -238,14 +253,14 @@ fn xdts_without_an_operator_is_exactly_the_schema() {
 /// with them.
 #[test]
 fn the_real_sheets_can_be_read() {
-    let t = tdts::from_str(&fixture("real_v7.tdts")).expect("tdts");
+    let t = tdts::from_str(&fixture("synthetic_v7.tdts")).expect("tdts");
     assert_eq!(t.cut, "001");
     assert_eq!(t.episode, "sample#01");
     assert_eq!(t.tables[0].columns, ["A", "B", "C"]);
     assert_eq!(t.tables[0].duration, 48);
     assert!(!t.tables[0].tracks.is_empty());
 
-    let s = xdts::from_str(&fixture("real_v5.xdts")).expect("by header line");
+    let s = xdts::from_str(&fixture("synthetic_v5.xdts")).expect("by header line");
     assert_eq!(s.cut, "001");
     assert_eq!(s.tables[0].columns, ["A", "B", "C"]);
     // The in-between mark in the sample survives the read.
@@ -258,7 +273,7 @@ fn the_real_sheets_can_be_read() {
 /// Reading a real sheet and writing it again gives back the same cell data.
 #[test]
 fn a_real_sheet_survives_being_rewritten() {
-    let once = tdts::from_str(&fixture("real_v7.tdts")).unwrap();
+    let once = tdts::from_str(&fixture("synthetic_v7.tdts")).unwrap();
     let twice = tdts::from_str(&tdts::to_string(&once, &WriteOptions::default())).unwrap();
     assert_eq!(once.tables[0].tracks, twice.tables[0].tracks);
     assert_eq!(once.cut, twice.cut);
@@ -274,7 +289,7 @@ fn a_real_sheet_survives_being_rewritten() {
 /// say it did not happen.
 #[test]
 fn the_written_direction_is_not_thrown_away() {
-    let s = tdts::from_str(&fixture("real_v7.tdts")).unwrap();
+    let s = tdts::from_str(&fixture("synthetic_v7.tdts")).unwrap();
     assert_eq!(s.tables[0].direction, "◇PAN A→B 全尺");
 
     let again = tdts::to_string(&s, &WriteOptions::default());
@@ -297,7 +312,7 @@ fn a_time_table_keeps_its_name() {
 
     // The real sheet's name is the application's own numbering, and it comes
     // back as it was too.
-    let real = tdts::from_str(&fixture("real_v7.tdts")).unwrap();
+    let real = tdts::from_str(&fixture("synthetic_v7.tdts")).unwrap();
     assert_eq!(real.tables[0].name, "sheet1");
 
     let mut unnamed = sample();
@@ -386,7 +401,7 @@ fn the_other_two_fields_survive_both_formats() {
 /// and the fixtures have them.
 #[test]
 fn a_real_sheet_keeps_its_dialogue_and_camera() {
-    for text in [fixture("real_v7.tdts"), fixture("real_v5.xdts")] {
+    for text in [fixture("synthetic_v7.tdts"), fixture("synthetic_v5.xdts")] {
         let once = xdts::from_str(&text).unwrap();
         let t = &once.tables[0];
         assert!(!t.dialogue.is_empty(), "no dialogue was read");
@@ -408,7 +423,7 @@ fn a_real_sheet_keeps_its_dialogue_and_camera() {
 /// file from the one the application would have written.
 #[test]
 fn rewriting_a_saved_sheet_gives_the_same_bytes() {
-    for (name, pretty) in [("real_v7.tdts", true), ("real_v5.xdts", false)] {
+    for (name, pretty) in [("synthetic_v7.tdts", true), ("synthetic_v5.xdts", false)] {
         let text = fixture(name).replace("\r\n", "\n");
         let (head, body) = text.split_once('\n').unwrap();
         let v = json::parse(body).expect("fixture parses");
@@ -541,7 +556,7 @@ fn several_tables_are_several_time_sheets() {
     s.tables.push(second);
 
     let text = tdts::to_string(&s, &WriteOptions::default());
-    let body = text.split_once("\r\n").unwrap().1.to_string();
+    let body = text.split_once('\n').unwrap().1.to_string();
     let v = json::parse(&body).unwrap();
     let sheets = v.get("timeSheets").unwrap().as_array().unwrap();
     assert_eq!(sheets.len(), 2, "the tables did not get a sheet each");
@@ -737,4 +752,19 @@ fn the_colours_survive() {
     let x_back = x::from_str(&x::to_string(&s, &WriteOptions::default())).unwrap();
     assert_eq!(x_back.tables[0].tracks[0].value_at(0), Some("1"));
     assert_eq!(x_back.tables[0].tracks[0].at(0).unwrap().font_color, 0);
+}
+
+/// The whole point, in one test: a sheet the application saved, read into
+/// this crate's model and written back out, is the same file. Not the same
+/// cells — the same bytes, keys and layout and line endings and all.
+///
+/// Anything this crate cannot hold fails this, which is how the written
+/// direction, the sheet name, the colours, the dummy frame counts and the
+/// revision history came to be in the model at all.
+#[test]
+fn a_saved_sheet_is_written_back_byte_for_byte() {
+    let text = fixture("saved_v10.tdts");
+    let sheet = tdts::from_str(&text).expect("the fixture reads");
+    let again = tdts::to_string(&sheet, &WriteOptions::default());
+    assert_eq!(again, text, "a saved sheet did not survive this crate");
 }

@@ -322,6 +322,10 @@ pub struct TimeTable {
     /// The colour the sheet is shown in, as an index into the application's
     /// own list. A TDTS key, and 0 — black — in every sheet seen so far.
     pub color: u32,
+    /// Dummy frames before the sheet starts (`headDummykomas`) and after it
+    /// ends (`footDummykomas`). TDTS keys; a real sheet had 24 and 48.
+    pub head_dummy: usize,
+    pub foot_dummy: usize,
     /// The sheet's written direction — the line of text above the columns,
     /// such as `◇PAN A→B 全尺`.
     ///

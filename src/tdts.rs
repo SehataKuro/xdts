@@ -1,33 +1,42 @@
 //! TDTS — the native format of 東映アニメーション デジタルタイムシート.
 //!
-//! A UTF-8 text file: the fixed header line [`HEADER`] followed by JSON,
-//! written with **CRLF** line endings, as the application's own sheets have
-//! them. Reading accepts either, and a BOM.
+//! A UTF-8 text file with no BOM: the fixed header line [`HEADER`] followed
+//! by JSON, LF line endings, four spaces to a level. Reading accepts CRLF
+//! and a BOM as well.
 //!
 //! ```text
 //! toeiDigitalTimeSheet Save Data
-//! { "timeSheets": [ { "header": {...}, "timeTables": [...] } ], "version": 7 }
+//! { "timeSheets": [ { "free": {}, "header": {...}, "timeTables": [...] } ], "version": 10 }
 //! ```
 //!
-//! There is no published specification. The structure written here was read
-//! off a sheet the application itself saved, and `tests/formats.rs` holds
-//! that file and checks this crate's output against it key for key.
+//! There is no published specification. What is written here was read off a
+//! sheet the application itself saved: `tests/data/saved_v10.tdts` is that
+//! shape, holding none of that sheet's contents, and `tests/formats.rs`
+//! checks this crate's output against it key for key and reads it back byte
+//! for byte.
 //!
 //! It is close to XDTS but **not** XDTS with a different header line:
 //!
 //! | | XDTS | TDTS |
 //! |---|---|---|
-//! | `version` | 5 | **7** |
-//! | sheets | `timeTables` at the top | wrapped in **`timeSheets`** |
-//! | line endings written | LF | **CRLF** |
+//! | `version` | 5 or 10 | **10** |
+//! | sheets | `timeTables` at the top | wrapped in **`timeSheets`**, beside a **`free`** |
+//! | written as | LF, two spaces | LF, **four spaces** |
 //! | `data[]` | `id`, `values` | plus **`fontColorId`** |
 //! | `timeTableHeaders` | only the fields written | **every field 0..5** |
-//! | sheet header | `cut`, `scene` | plus `episode`, `showHeaderDummy`, `timeTableFontColors`, `workSlip` |
-//! | time table | `duration`, `name`, `fields`, `timeTableHeaders` | plus `books`, `color`, `direction` |
+//! | sheet header | `cut`, `scene` | plus `episode`, `showHeadDummy`, `timeTableFontColors`, `workSlip` |
+//! | time table | `duration`, `name`, `fields`, `timeTableHeaders` | plus `color`, `direction`, `headDummykomas`, `footDummykomas` |
 //!
 //! Version 5 is the older form, with `timeTables` at the top level and no
 //! wrapper, so `timeSheets` carrying `version: 5` is a shape no reader
 //! expects. [`from_str`] accepts both.
+//!
+//! Two of those keys are worth a note, because this crate had them wrong
+//! until a saved sheet turned up. It wrote `showHeaderDummy`, which no saved
+//! sheet has — the key is `showHeadDummy`, the head of the sheet, as
+//! `headDummykomas` counts its dummy frames — and it wrote a `books`, which
+//! no saved sheet has either. Both came from following another editor's
+//! sample file as though it were the format.
 //!
 //! # Sheets and revisions
 //!
@@ -41,8 +50,8 @@
 //! it. A file with a history keeps it.
 //!
 //! The only description of this that could be found is a third party's, in
-//! the DiTiS editor's notes on the format, and `tests/data/` has a file with
-//! one sheet and one revision, so it does not settle the question.
+//! the DiTiS editor's notes on the format, and every sheet seen so far has
+//! one revision in one `timeSheet`, so it does not settle the question.
 //!
 //! The sheet's `direction` — the written instruction above the columns — and
 //! the time table's own `name` are kept as they were read. Writing a fixed
@@ -77,8 +86,12 @@ use crate::{
 
 pub const HEADER: &str = "toeiDigitalTimeSheet Save Data";
 
-/// TDTS is version 7; see the module note on why this is not XDTS's 5.
-pub const VERSION: u32 = 7;
+/// The version a sheet saved by the application carries, and what this crate
+/// writes. See the module note on why this is not XDTS's 5.
+pub const VERSION: u32 = 10;
+
+/// The indent a sheet saved by the application has, in spaces per level.
+const INDENT: usize = 4;
 
 /// The application's own text colours: black, red, green, blue, purple,
 /// orange.
@@ -139,15 +152,18 @@ fn headers(t: &TimeTable) -> Value {
     // The cell names belong to whichever of the two cell columns this sheet
     // keeps its cells in; the other one gets the empty header it has in a
     // sheet that does not use it.
-    let cells = |id: u32| {
+    let defaults: [&str; 7] = ["a", "b", "c", "d", "e", "f", "g"];
+    let cells = |id: u32, default: &[&str]| {
         if t.cell_field == id {
-            names_or(&t.columns, &[])
+            names_or(&t.columns, default)
         } else {
-            Value::Array(Vec::new())
+            names_or(&[], default)
         }
     };
     Value::Array(vec![
-        Value::obj().with("fieldId", 0u32).with("names", cells(0)),
+        Value::obj()
+            .with("fieldId", 0u32)
+            .with("names", cells(0, &[])),
         Value::obj()
             .with("fieldId", 1u32)
             .with("names", strings(&[""])),
@@ -157,7 +173,9 @@ fn headers(t: &TimeTable) -> Value {
         Value::obj()
             .with("fieldId", 3u32)
             .with("names", names_or(&t.dialogue.columns, &["S1", "S2"])),
-        Value::obj().with("fieldId", 4u32).with("names", cells(4)),
+        Value::obj()
+            .with("fieldId", 4u32)
+            .with("names", cells(4, &defaults)),
         Value::obj()
             .with("fieldId", 5u32)
             .with("names", names_or(&t.camera.columns, &["1", "2"])),
@@ -187,19 +205,15 @@ fn time_table(t: &TimeTable, sheet: &Sheet, index: usize) -> Value {
     }
     // Keys in the order a sheet saved by the application has them.
     Value::obj()
-        .with(
-            "books",
-            Value::Array(vec![Value::obj()
-                .with("fieldId", 0u32)
-                .with("tracks", Value::Array(Vec::new()))]),
-        )
         .with("color", t.color)
         .with("direction", t.direction.as_str())
         .with("duration", t.duration.max(1))
         .with("fields", Value::Array(fields))
+        .with("footDummykomas", t.foot_dummy)
         // The application names its sheets sheet1, sheet2, …, which is what a
         // table with no name of its own gets. A name the caller has is not
         // overwritten with a number.
+        .with("headDummykomas", t.head_dummy)
         .with(
             "name",
             if t.name.is_empty() {
@@ -222,7 +236,9 @@ pub fn header(sheet: &Sheet) -> Value {
         .with("cut", sheet.cut.as_str())
         .with("episode", sheet.episode.as_str())
         .with("scene", sheet.scene.as_str())
-        .with("showHeaderDummy", false)
+        // `showHeadDummy`, not `showHeaderDummy`: the dummy frames at the
+        // head of the sheet, as `headDummykomas` below counts them.
+        .with("showHeadDummy", false)
         .with("timeTableFontColors", Value::Array(colors))
         .with("workSlip", empty_work_slip())
 }
@@ -231,6 +247,8 @@ pub fn header(sheet: &Sheet) -> Value {
 /// has.
 fn time_sheet(sheet: &Sheet, tables: Vec<Value>) -> Value {
     Value::obj()
+        // Empty in a saved sheet, and this crate has nothing to put in it.
+        .with("free", Value::obj())
         .with("header", header(sheet))
         .with("timeTables", Value::Array(tables))
 }
@@ -269,16 +287,13 @@ pub fn to_value(sheet: &Sheet) -> Value {
 pub fn to_string(sheet: &Sheet, opts: &WriteOptions) -> String {
     let v = to_value(sheet);
     let body = if opts.pretty {
-        v.to_pretty()
+        v.to_pretty_indent(INDENT)
     } else {
         v.to_compact()
     };
-    // CRLF throughout, as the application's own sheets are. Nothing in
-    // this repository shows that: the fixtures are synthetic and LF, and a
-    // reader accepts either. It is written this way so that a sheet from
-    // here is the same kind of file as one from the application, and the
-    // claim is worth stating plainly enough to be corrected.
-    format!("{HEADER}\n{body}\n").replace('\n', "\r\n")
+    // LF, as a sheet saved by the application is: it has no BOM and no CR
+    // either, and this crate used to write CRLF on the strength of nothing.
+    format!("{HEADER}\n{body}\n")
 }
 
 pub fn from_str(text: &str) -> Result<Sheet, Error> {

@@ -65,15 +65,23 @@ impl Value {
         }
     }
 
+    /// Laid out over several lines, two spaces to a level.
     pub fn to_pretty(&self) -> String {
+        self.to_pretty_indent(2)
+    }
+
+    /// The same, with the indent the writer being matched uses: the 東映
+    /// digital timesheet writes four spaces to a level, and a sheet saved by
+    /// it is only reproduced byte for byte that way.
+    pub fn to_pretty_indent(&self, width: usize) -> String {
         let mut s = String::new();
-        write_value(&mut s, self, 0, true);
+        write_value(&mut s, self, 0, Some(width));
         s
     }
 
     pub fn to_compact(&self) -> String {
         let mut s = String::new();
-        write_value(&mut s, self, 0, false);
+        write_value(&mut s, self, 0, None);
         s
     }
 }
@@ -146,13 +154,13 @@ fn escape(out: &mut String, s: &str) {
     out.push('"');
 }
 
-fn indent(out: &mut String, n: usize) {
-    for _ in 0..n {
-        out.push_str("  ");
+fn indent(out: &mut String, n: usize, width: usize) {
+    for _ in 0..n * width {
+        out.push(' ');
     }
 }
 
-fn write_value(out: &mut String, v: &Value, depth: usize, pretty: bool) {
+fn write_value(out: &mut String, v: &Value, depth: usize, pretty: Option<usize>) {
     match v {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -161,60 +169,68 @@ fn write_value(out: &mut String, v: &Value, depth: usize, pretty: bool) {
         Value::Array(a) => {
             // The applications put every element on its own line, however
             // small; a saved sheet is matched byte for byte only this way.
-            if !pretty || a.is_empty() {
+            let Some(width) = pretty.filter(|_| !a.is_empty()) else {
                 out.push('[');
                 for (i, x) in a.iter().enumerate() {
                     if i > 0 {
                         out.push(',');
-                        if pretty {
+                        if pretty.is_some() {
                             out.push(' ');
                         }
                     }
                     write_value(out, x, depth + 1, pretty);
                 }
                 out.push(']');
-            } else {
-                out.push_str("[\n");
-                for (i, x) in a.iter().enumerate() {
-                    indent(out, depth + 1);
-                    write_value(out, x, depth + 1, pretty);
-                    if i + 1 < a.len() {
-                        out.push(',');
-                    }
-                    out.push('\n');
+                return;
+            };
+            out.push_str("[\n");
+            for (i, x) in a.iter().enumerate() {
+                indent(out, depth + 1, width);
+                write_value(out, x, depth + 1, pretty);
+                if i + 1 < a.len() {
+                    out.push(',');
                 }
-                indent(out, depth);
-                out.push(']');
+                out.push('\n');
             }
+            indent(out, depth, width);
+            out.push(']');
         }
         Value::Object(m) => {
+            // An object with nothing in it still takes two lines: the
+            // application writes the braces on their own, and `free` in a
+            // saved sheet is exactly that.
             if m.is_empty() {
-                out.push_str("{}");
+                out.push('{');
+                if let Some(width) = pretty {
+                    out.push('\n');
+                    indent(out, depth, width);
+                }
+                out.push('}');
                 return;
             }
             out.push('{');
-            if pretty {
+            if pretty.is_some() {
                 out.push('\n');
             }
             for (i, (k, x)) in m.iter().enumerate() {
-                if pretty {
-                    indent(out, depth + 1);
+                if let Some(width) = pretty {
+                    indent(out, depth + 1, width);
                 }
                 escape(out, k);
                 out.push(':');
-                if pretty {
+                if pretty.is_some() {
                     out.push(' ');
                 }
                 write_value(out, x, depth + 1, pretty);
                 if i + 1 < m.len() {
                     out.push(',');
                 }
-                if pretty {
+                if pretty.is_some() {
                     out.push('\n');
                 }
             }
-            if pretty {
-                indent(out, depth);
+            if let Some(width) = pretty {
+                indent(out, depth, width);
             }
             out.push('}');
         }

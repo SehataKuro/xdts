@@ -10,13 +10,25 @@ The XDTS and TDTS readers and writers were first written for sheetscan-rs
 
 ---
 
-tests/data/real_v7.tdts, tests/data/real_v5.xdts
+tests/data/synthetic_v7.tdts, tests/data/synthetic_v5.xdts
 
-  Synthetic sample sheets from the vdts-editor project, used here as
-  fixtures so that this crate's TDTS and XDTS output can be checked against
-  files a real application writes. Their contents are invented, not taken
-  from any production timesheet.
+  Synthetic sample sheets from the vdts-editor project. Their contents are
+  invented, not taken from any production timesheet, and so is their shape:
+  synthetic_v7.tdts spells one key `showHeaderDummy` where a sheet saved by
+  the application has `showHeadDummy`. They are fixtures for reading, and
+  synthetic_v5.xdts is this crate's XDTS key reference for want of a real
+  one; tests/data/saved_v10.tdts is the TDTS reference.
 
   Copyright (c) 2026 lunafuse
   https://github.com/lunafuse/vdts-editor
   Licensed under the MIT License.
+
+---
+
+tests/data/saved_v10.tdts
+
+  Written by this crate, and the reference for what a saved TDTS sheet looks
+  like. Its key set, key order, indent and line endings were checked against
+  a sheet the 東映 digital timesheet itself saved, key for key and byte for
+  byte; the sheet itself is not here and none of its contents are — the
+  columns, the cell numbers and the timing in this file are invented.
