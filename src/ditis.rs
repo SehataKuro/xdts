@@ -60,10 +60,30 @@
 //! with what a new DiTiS sheet has (24 fps, one page, no inserted or
 //! disabled rows). DiTiS has only cell columns, so a sheet's dialogue and
 //! camerawork fields, and a cell's p1 marks, are not written.
+//!
+//! # Byte for byte
+//!
+//! A DiTiS file read and written again is the file it was, byte for byte,
+//! whichever way DiTiS made the sheet. Two things make that so, and both
+//! are about a sheet read from DiTiS:
+//!
+//! * A sheet's [`TimeTable::extra`] holds **every** key of the sheet, in the
+//!   file's order — the four this crate models (`name`, `frames`, `layers`,
+//!   `data`) as well — and the writer goes through them in that order. The
+//!   values of those four in the extras are not used for anything but this:
+//!   what is written for them comes from the model.
+//! * `data` is written back exactly as it was read while the cells are
+//!   unchanged — the same length and columns, and the same changes in every
+//!   column. That keeps what the changes cannot say: whether an empty frame
+//!   was `×` or `""`, a `-` where a drawing goes on. Once a cell is changed
+//!   the whole of `data` is written from the model, as above.
+//!
+//! The extras of the other formats never hold a modelled key, and their
+//! writers would not write one twice.
 
 use crate::json::{self, Value};
 use crate::{
-    Error, Extra, Format, Sheet, TimeTable, Track, WriteOptions, HYPHEN, NULL_CELL, TICK_1, TICK_2,
+    Error, Format, Sheet, TimeTable, Track, WriteOptions, HYPHEN, NULL_CELL, TICK_1, TICK_2,
 };
 
 /// The version a DiTiS file is written with when the sheet did not come
@@ -177,11 +197,8 @@ fn table_from_value(v: &Value) -> Result<TimeTable, Error> {
         duration,
         columns,
         tracks,
-        extra: m
-            .iter()
-            .filter(|(k, _)| !SHEET_KEYS.contains(&k.as_str()))
-            .cloned()
-            .collect(),
+        // Every key, the modelled ones too: see "Byte for byte".
+        extra: m.clone(),
         ..TimeTable::default()
     })
 }
@@ -262,6 +279,59 @@ fn sheet_value(t: &TimeTable, index: usize, own: bool) -> Value {
         t.name.clone()
     };
     let columns = t.columns.len().max(t.tracks.len());
+    let layers = Value::Array(
+        (0..columns)
+            .map(|c| Value::from(t.columns.get(c).cloned().unwrap_or_default()))
+            .collect(),
+    );
+    let read = own
+        .then(|| t.extra.iter().find(|(k, _)| k == "data"))
+        .flatten()
+        .map(|(_, v)| v);
+    let data = match read {
+        Some(v) if unchanged(t, v) => v.clone(),
+        _ => data_value(t, columns),
+    };
+    let modelled = |key: &str| -> Option<Value> {
+        match key {
+            "name" => Some(name.clone().into()),
+            "frames" => Some(t.duration.into()),
+            "layers" => Some(layers.clone()),
+            "data" => Some(data.clone()),
+            _ => None,
+        }
+    };
+
+    // A sheet from DiTiS: its keys, in its order, with the modelled ones
+    // filled from the model, and any of those it lacked at the end.
+    if own {
+        let mut m: Vec<(String, Value)> = t
+            .extra
+            .iter()
+            .map(|(k, v)| (k.clone(), modelled(k).unwrap_or_else(|| v.clone())))
+            .collect();
+        for key in SHEET_KEYS {
+            if !m.iter().any(|(k, _)| k == key) {
+                m.extend(modelled(key).map(|v| (key.to_string(), v)));
+            }
+        }
+        return Value::Object(m);
+    }
+
+    // Any other sheet: the keys a new DiTiS sheet has, in its order.
+    let mut m = vec![("name".to_string(), Value::from(name.clone()))];
+    m.push(("fps".into(), 24usize.into()));
+    m.push(("layers".into(), layers.clone()));
+    m.push(("frames".into(), t.duration.into()));
+    m.push(("framePageSize".into(), t.duration.into()));
+    m.push(("data".into(), data.clone()));
+    m.push(("insertedFrames".into(), Value::Array(Vec::new())));
+    m.push(("disabledFrames".into(), Value::Array(Vec::new())));
+    Value::Object(m)
+}
+
+/// `data` written from the model.
+fn data_value(t: &TimeTable, columns: usize) -> Value {
     let empty = Track::default();
     let mut data: Vec<Value> = (0..columns)
         .map(|c| {
@@ -272,37 +342,31 @@ fn sheet_value(t: &TimeTable, index: usize, own: bool) -> Value {
     while matches!(data.last(), Some(Value::Array(a)) if a.is_empty()) {
         data.pop();
     }
-    let layers = Value::Array(
-        (0..columns)
-            .map(|c| Value::from(t.columns.get(c).cloned().unwrap_or_default()))
-            .collect(),
-    );
+    Value::Array(data)
+}
 
-    // The order a new DiTiS sheet has, with what it keeps that this crate
-    // does not model in its place, and the rest after.
-    let extra: Extra = if own {
-        t.extra.clone()
-    } else {
-        vec![
-            ("fps".into(), 24usize.into()),
-            ("framePageSize".into(), t.duration.into()),
-            ("insertedFrames".into(), Value::Array(Vec::new())),
-            ("disabledFrames".into(), Value::Array(Vec::new())),
-        ]
+/// Whether `data`, as read, still says what the model says: the same
+/// changes in every column. Only the column-list form is written back; the
+/// older keyed form is always written anew.
+fn unchanged(t: &TimeTable, data: &Value) -> bool {
+    let Value::Array(cols) = data else {
+        return false;
     };
-    let take = |key: &str| extra.iter().find(|(k, _)| k == key).cloned();
-    let mut m = vec![("name".to_string(), Value::from(name))];
-    m.extend(take("fps"));
-    m.push(("layers".into(), layers));
-    m.push(("frames".into(), t.duration.into()));
-    m.extend(take("framePageSize"));
-    m.push(("data".into(), Value::Array(data)));
-    m.extend(
-        extra
-            .into_iter()
-            .filter(|(k, _)| k != "fps" && k != "framePageSize"),
-    );
-    Value::Object(m)
+    let columns = t.columns.len().max(t.tracks.len());
+    if cols.len() > columns {
+        return false;
+    }
+    let empty = Track::default();
+    (0..columns).all(|c| {
+        let read = cols.get(c).and_then(Value::as_array).unwrap_or(&[]);
+        if read.len() > t.duration {
+            return false;
+        }
+        let track = track_from_frames(
+            (0..t.duration).map(|f| read.get(f).map(Value::to_text).unwrap_or_default()),
+        );
+        &track == t.tracks.get(c).unwrap_or(&empty)
+    })
 }
 
 /// Write a sheet as a DiTiS file.

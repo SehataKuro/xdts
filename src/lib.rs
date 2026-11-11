@@ -82,6 +82,7 @@
 
 use std::fmt;
 
+mod cp932;
 pub mod ditis;
 pub mod json;
 pub mod sts;
@@ -378,6 +379,10 @@ pub struct TimeTable {
     /// ignores this, because field 4 is not a field that format has.
     pub cell_field: u32,
     /// Keys in this time table this crate does not model.
+    ///
+    /// For a sheet read from DiTiS, every key of the sheet, in the file's
+    /// order, so that it is written back as it was: see
+    /// [`ditis`](crate::ditis#byte-for-byte).
     pub extra: Extra,
     /// Keys in the TDTS `timeSheets[]` entry this sheet was read from, beside
     /// its header and its time tables: `free` is one.
