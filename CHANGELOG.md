@@ -15,6 +15,8 @@
 - **STS**（シラヘイタイムシート、DiTiS）の読み書き：`sts::from_bytes` / `sts::to_bytes`。DiTiS が書くファイルとはバイト単位で往復し、元のアプリの読み方（256 コマ以上、Shift_JIS の列名）も読めます
 - **TNZ**（OpenToonz / Tahoma2D のシーン）の読み込み：`tnz::from_str` / `tnz::from_bytes`。OpenToonz 自身の XDTS 書き出しと同じ解釈でセル欄を取り出します
 - `from_bytes`：STS・XDTS・TDTS・TNZ を先頭で判別して読みます。`from_str` も TNZ を判別します
+- `examples/convert.rs`：読める形式から書ける形式へ変換する例（`cargo run --example convert -- in.tnz out.xdts`）
+- `FORMATS.md`：形式ごとの根拠・確かめたこと・限界。`tools/check-ditis.mjs` で DiTiS のコードとの突き合わせを再現できます（パッケージには含めません）
 - `Error::Unsupported`：書き出す形式に置き場所がないものを、別の値に置き換えずに断るためのエラー
 
 ## 0.1.0

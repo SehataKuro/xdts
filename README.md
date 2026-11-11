@@ -268,6 +268,8 @@ DiTiS の独自形式は、ヘッダ行のない JSON です（DiTiS の `buildD
 
 ## 正しさの確かめ方
 
+形式ごとに何を根拠にし、何を確かめ、何を確かめていないかは [FORMATS.md](FORMATS.md) にまとめています。DiTiS との突き合わせは `node tools/check-ditis.mjs /path/to/ditis` で再現できます。
+
 TDTS 側の基準は `tests/data/saved_v10.tdts` です。これはこのクレートが書き出したファイルですが、**キー構成・キー順・インデント・改行を、アプリケーションが実際に保存したシートとバイト単位で突き合わせて確認**しています（そのシート自体と中身は入っていません。NOTICE を参照）。合成データの `synthetic_v7.tdts` は読み込みのテストにのみ使います——これを書き出しの基準にしていたために、このクレートは存在しないキー `showHeaderDummy` を書き続けていました。
 
 XDTS には[公開スキーマ](https://github.com/shun-iwasawa/XDTS-uext)（[version 10 の原文 PDF](https://vd.clipstudio.net/clipcontent/paint/app/ToeiAnimation/XDTSFileFormat_ver10_en.pdf)）がありますが、**TDTS には仕様書がありません**。そこで `tests/data/` に**実際のアプリケーションが保存したシート**を置き、書き出した JSON の**キー構成が完全に一致する**ことを両方向で検証しています。
@@ -302,4 +304,4 @@ push のたびに GitHub Actions で次を確かめます（`.github/workflows/c
 
 ## ライセンス
 
-Apache-2.0。`tests/data/` のサンプルシートは [vdts-editor](https://github.com/lunafuse/vdts-editor)（MIT）の架空の合成データです。NOTICE を参照してください。
+Apache-2.0。`tests/data/` のファイルの出どころ（[vdts-editor](https://github.com/lunafuse/vdts-editor) の合成データ、DiTiS のコードが書いたファイル、手で書いたシーンなど）とそれぞれのライセンスは NOTICE にあります。
