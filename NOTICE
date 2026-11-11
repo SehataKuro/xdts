@@ -43,3 +43,14 @@ tests/data/csp_v5.xdts
   production work and is not here, and none of its contents are — the cut
   number, the column names, the cell numbers and the timing in this file
   are invented.
+
+---
+
+tests/data/synthetic.tnz
+
+  Written by hand for this crate, in the shape OpenToonz saves a scene —
+  TOStream's tokens, its unescaped `&`, its references by id — as read off
+  OpenToonz's source (toonz/sources/common/tstream/tstream.cpp and the
+  column, level and xsheet savers in toonz/sources/toonzlib). The scene is
+  invented: no level, path or timing in it comes from any production scene
+  or from OpenToonz's sample scenes, which are CC BY-NC 4.0 and are not here.

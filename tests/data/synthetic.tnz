@@ -1,0 +1,178 @@
+<tnz framecount="12" version="71.0">
+  <generator>
+    "OpenToonz 1.7.1"
+  </generator>
+  <properties>
+    <outputs>
+      <output name="main">
+        <range>
+          0 9 
+        </range>
+        <step>
+          1 
+        </step>
+        <fps>
+          24 
+        </fps>
+        <path>
+          "+outputs\\.tif"
+        </path>
+        <formatsProperties>
+          <formatProperties ext="tif">
+            <property name="Compression Type" type="enum" value="Lempel-Ziv & Welch encoding">
+              <item value="Lempel-Ziv & Welch encoding"/>
+              </property>
+            </formatProperties>
+          </formatsProperties>
+        </output>
+      <output name="preview">
+        <range>
+          0 -1 
+        </range>
+        </output>
+      </outputs>
+    </properties>
+  <levelSet>
+    <levels>
+      <level id='1'>
+        A 
+        <info dpiType="image"/>
+        <path>
+          "+drawings\\A.tlv"
+        </path>
+
+      </level>
+      <level id='2'>
+        "BG 01"
+        <info dpiType="image"/>
+        <path>
+          "$scenefolder\\BG\\BG 01.tif"
+        </path>
+
+      </level>
+      <level id='3'>
+        B 
+        <info dpiType="image"/>
+        <path>
+          "+drawings\\B.pli"
+        </path>
+
+      </level>
+      <childLevel id='4'>
+        <xsheet id='5'>
+          <columns>
+            <levelColumn id='6'>
+
+              <status>
+                0 
+              </status>
+              <cells>
+                <cell>
+                  0 4 <level id='3'/>0001 1 
+                </cell>
+                </cells>
+
+            </levelColumn>
+            </columns>
+          </xsheet>
+        <name>
+          Sub1 
+        </name>
+
+      </childLevel>
+      <soundLevel id='7'>
+        se 
+        <path>
+          "+extras\\se.wav"
+        </path>
+
+      </soundLevel>
+      </levels>
+    <folder name="Cast" type="default">
+      <levels>
+        <level id='1'/><level id='2'/><level id='3'/><childLevel id='4'/>
+      </levels>
+      </folder>
+    </levelSet>
+  <xsheet>
+    <columns>
+      <levelColumn id='8'>
+
+        <status>
+          0 
+        </status>
+        <cells>
+          <cell>
+            0 3 <level id='1'/>0001 0 
+          </cell>
+          <cell>
+            3 3 <level id='1'/>0002 1 
+          </cell>
+          <cell>
+            6 1 <level id='1'/>0003a 0 
+          </cell>
+          <cell>
+            8 2 <level id='1'/>0004 0 
+          </cell>
+          </cells>
+
+      </levelColumn>
+      <levelColumn id='9'>
+
+        <status>
+          0 
+        </status>
+        <cells>
+          <cell>
+            0 10 <level id='2'/>"-"0 
+          </cell>
+          </cells>
+
+      </levelColumn>
+      <soundColumn id='10'>
+        <status>
+          0 
+        </status>
+        </soundColumn>
+      <zeraryFxColumn id='11'>
+        <status>
+          0 
+        </status>
+        </zeraryFxColumn>
+      <levelColumn id='12'>
+
+        <status>
+          0 
+        </status>
+        <cells>
+          <cell>
+            2 2 <childLevel id='4'/>0001 0 
+          </cell>
+          <cell>
+            4 2 <level id='3'/>0002 0 
+          </cell>
+          <cell>
+            6 2 <childLevel id='4'/>0002 0 
+          </cell>
+          </cells>
+
+      </levelColumn>
+      <levelColumn id='13'>
+
+        <status>
+          0 
+        </status>
+
+      </levelColumn>
+      </columns>
+    <pegbars>
+      <pegbar id="Col1">
+        <parent handle="B" id="Table" parentHandle="B">
+          </parent>
+        <name>
+          "renamed column"
+        </name>
+        </pegbar>
+      </pegbars>
+    </xsheet>
+  </tnz>

@@ -6,3 +6,4 @@
 # csp_v5.xdts are those two, so this matters to them most.
 tests/data/*.tdts -text
 tests/data/*.xdts -text
+tests/data/*.tnz -text
