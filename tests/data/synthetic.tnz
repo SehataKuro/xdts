@@ -80,6 +80,19 @@
         </name>
 
       </childLevel>
+      <soundTextLevel id='14'>
+        dialog 
+        <frame>
+          "おはよう"
+        </frame>
+        <frame>
+          "また \"明日\" & <ね>"
+        </frame>
+        <type>
+          textSound 
+        </type>
+
+      </soundTextLevel>
       <soundLevel id='7'>
         se 
         <path>
@@ -115,6 +128,20 @@
             8 2 <level id='1'/>0004 0 
           </cell>
           </cells>
+        <cellMarks>
+          <cellMark id="0">
+            3 
+          </cellMark>
+          <cellMark id="4">
+            8 
+          </cellMark>
+          <cellMark id="6">
+            "1 2"
+          </cellMark>
+          <cellMark id="8">
+            9 
+          </cellMark>
+          </cellMarks>
 
       </levelColumn>
       <levelColumn id='9'>
@@ -164,6 +191,17 @@
         </status>
 
       </levelColumn>
+      <soundTextColumn id='15'>
+        <cells>
+          <cell>
+            "1-3" 1 <soundTextLevel id='14'/>
+          </cell>
+          <cell>
+            5 2 <soundTextLevel id='14'/>
+          </cell>
+          </cells>
+
+      </soundTextColumn>
       </columns>
     <pegbars>
       <pegbar id="Col1">
@@ -171,6 +209,13 @@
           </parent>
         <name>
           "renamed column"
+        </name>
+        </pegbar>
+      <pegbar id="Col7">
+        <parent handle="B" id="Table" parentHandle="B">
+          </parent>
+        <name>
+          "太郎"
         </name>
         </pegbar>
       </pegbars>

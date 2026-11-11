@@ -8,7 +8,10 @@
 //! shape OpenToonz saves (see NOTICE), with what OpenToonz's own XDTS export
 //! would make of it written out below.
 
-use xdts::{sts, tnz, Error, Sheet, TimeTable, Track, HYPHEN, NULL_CELL, TICK_1};
+use xdts::{
+    sts, tnz, Error, Sheet, TimeTable, Track, HYPHEN, NULL_CELL, OPTION_KEYFRAME,
+    OPTION_REFERENCEFRAME, TICK_1, TICK_2,
+};
 
 /// An STS file as DiTiS's `generateStsBuffer` writes one: a byte of frame
 /// count, a zero after it, cells as [value, 0], names as UTF-8.
@@ -77,13 +80,13 @@ fn an_sts_over_255_frames_with_a_shift_jis_name_reads() {
         let n: u16 = if f < 150 { 1 } else { 1000 };
         b.extend_from_slice(&n.to_le_bytes());
     }
-    // セル in Shift_JIS.
-    b.extend_from_slice(&[4, 0x83, 0x5a, 0x83, 0x8b]);
+    // 背景セル in Shift_JIS, kanji and all.
+    b.extend_from_slice(&[8, 0x94, 0x77, 0x8c, 0x69, 0x83, 0x5a, 0x83, 0x8b]);
 
     let s = sts::from_bytes(&b).unwrap();
     let t = table(&s);
     assert_eq!(t.duration, 300);
-    assert_eq!(t.columns, ["セル"]);
+    assert_eq!(t.columns, ["背景セル"]);
     assert_eq!(values(&t.tracks[0]), [(0, "1"), (150, "1000")]);
 }
 
@@ -164,22 +167,34 @@ fn a_scene_reads_as_opentoonz_exports_it() {
     assert_eq!(t.columns, ["A", "BG 01", "", "Sub1"]);
 
     // Padding gone, increments expanded, a letter kept, a gap closed with ×,
-    // and × on the frame after the last cell.
+    // and × on the frame after the last cell. The cell marks are the export
+    // dialog's defaults: Blue (6) on a held drawing is ○, Purple (8) ●, Red
+    // (0) on a new drawing a key, Green (4) a reference.
     assert_eq!(
         values(&t.tracks[0]),
         [
             (0, "1"),
+            (1, TICK_1),
+            (2, TICK_1),
             (3, "2"),
             (4, "3"),
             (5, "4"),
             (6, "3a"),
             (7, NULL_CELL),
             (8, "4"),
+            (9, TICK_2),
             (10, NULL_CELL),
         ]
     );
-    // A single image with no frame number is drawing 1.
+    let options = |f: usize| t.tracks[0].at(f).unwrap().options.clone();
+    assert_eq!(options(3), [OPTION_KEYFRAME]);
+    assert_eq!(options(8), [OPTION_REFERENCEFRAME]);
+    assert!(options(4).is_empty());
+    // A single image with no frame number is drawing 1 — where OpenToonz's
+    // own export writes its internal "no frame", -2, which is the one place
+    // this reader differs from it on purpose.
     assert_eq!(values(&t.tracks[1]), [(0, "1"), (10, NULL_CELL)]);
+    assert!(SCENE.contains("<level id='2'/>\"-\"0"));
     assert!(t.tracks[2].frames.is_empty());
     // A column starting late opens with ×, and a cell of another level in it
     // is written as empty.
@@ -194,16 +209,45 @@ fn a_scene_reads_as_opentoonz_exports_it() {
         ]
     );
 
+    // A sound text column is the dialogue field: named after the column,
+    // the speaker and the line where it starts, held by a hyphen after.
+    assert_eq!(t.dialogue.columns, ["太郎"]);
+    let lines: Vec<(usize, Vec<String>)> = t.dialogue.tracks[0]
+        .frames
+        .iter()
+        .map(|(f, i)| (*f, i.values.clone()))
+        .collect();
+    let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        [
+            (1, v(&["太郎", "おはよう"])),
+            (2, v(&[HYPHEN])),
+            (3, v(&[HYPHEN])),
+            (5, v(&["太郎", "また \"明日\" & <ね>"])),
+        ]
+    );
+
+    // With no marks read, the same column has none of the symbols.
+    let plain = tnz::from_str_with(SCENE, &tnz::CellMarks::NONE).unwrap();
+    assert!(!plain.tables[0].tracks[0].has_options());
+    assert!(plain.tables[0].tracks[0]
+        .frames
+        .iter()
+        .all(|(_, c)| c.value != TICK_1 && c.value != TICK_2));
+
     // The top-level readers know a scene by how it starts.
     assert_eq!(xdts::from_str(SCENE).unwrap(), s);
     assert_eq!(xdts::from_bytes(SCENE.as_bytes()).unwrap(), s);
 
     // And what comes out is an ordinary sheet: XDTS takes it as it is.
     let x = xdts::xdts::to_string(&s, &Default::default());
-    assert_eq!(
-        xdts::xdts::from_str(&x).unwrap().tables[0].columns,
-        t.columns
-    );
+    let back = xdts::xdts::from_str(&x).unwrap();
+    assert_eq!(back.tables[0].columns, t.columns);
+    assert_eq!(back.tables[0].tracks, t.tracks);
+    assert_eq!(back.tables[0].dialogue, t.dialogue);
+    // The key and reference marks are p1's, and the file says so.
+    assert!(x.contains("\"subversion\": \"p1\""));
 }
 
 #[test]
