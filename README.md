@@ -12,7 +12,7 @@
 
 ```toml
 [dependencies]
-xdts = "0.1"
+xdts = "0.2"
 ```
 
 API ドキュメントは [docs.rs/xdts](https://docs.rs/xdts) にあります。
