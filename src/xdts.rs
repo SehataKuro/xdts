@@ -88,8 +88,8 @@
 
 use crate::json::{self, Value};
 use crate::{
-    Cell, Error, Field, Sheet, TimeTable, Track, ValueTrack, WriteOptions, FIELD_CAMERA,
-    FIELD_CELL, FIELD_CELL_ALT, FIELD_DIALOG,
+    Cell, Error, Field, Instruction, Sheet, TimeTable, Track, ValueTrack, WriteOptions,
+    FIELD_CAMERA, FIELD_CELL, FIELD_CELL_ALT, FIELD_DIALOG,
 };
 
 /// The first line of every XDTS file, which is how one is recognised.
@@ -275,12 +275,11 @@ pub(crate) fn cell_frames<'a>(
 
 /// A dialogue or camerawork field's frame entries, one list per column.
 pub(crate) fn value_frames<'a>(f: &'a Field, d: Dialect) -> impl Iterator<Item = Vec<Value>> + 'a {
-    // A line or a camera move has no marks and no colour of its own.
-    let color = d.font_colors.then_some(0);
+    // A line or a camera move has no marks, and in TDTS has a colour.
     f.tracks.iter().map(move |tr| {
         tr.frames
             .iter()
-            .map(|(fr, v)| frame_entry(*fr, v, &[], color))
+            .map(|(fr, i)| frame_entry(*fr, &i.values, &[], d.font_colors.then_some(i.font_color)))
             .collect()
     })
 }
@@ -474,11 +473,14 @@ fn field_from_value(tt: &Value, id: u32) -> (Field, usize) {
         .unwrap_or_default();
     let (decoded, max_frame) = tracks_of(tt, id);
     // Dialogue and camerawork have no marks on them, so the options go no
-    // further here.
+    // further here; the colour does, as it does for a cell.
     let tracks = decoded
         .into_iter()
         .map(|frames| ValueTrack {
-            frames: frames.into_iter().map(|(f, v, ..)| (f, v)).collect(),
+            frames: frames
+                .into_iter()
+                .map(|(f, values, _, font_color)| (f, Instruction { values, font_color }))
+                .collect(),
         })
         .collect();
     (Field { columns, tracks }, max_frame)

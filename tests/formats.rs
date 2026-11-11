@@ -63,29 +63,17 @@ fn sample_with_camera() -> Sheet {
     t.dialogue = Field {
         columns: vec!["S1".into()],
         tracks: vec![ValueTrack {
-            frames: vec![
-                (0, vec!["A".into(), "おはよう".into()]),
-                (4, vec![xdts::HYPHEN.into()]),
-            ],
+            frames: vec![(0, ["A", "おはよう"].into()), (4, [xdts::HYPHEN].into())],
         }],
     };
     t.camera = Field {
         columns: vec!["1".into()],
         tracks: vec![ValueTrack {
             frames: vec![
-                (
-                    0,
-                    ["T.U.", "0", "0", "100", "0", "0", "0"]
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect(),
-                ),
+                (0, ["T.U.", "0", "0", "100", "0", "0", "0"].into()),
                 (
                     11,
-                    ["SYMBOL_HYPHEN", "120", "-40", "150", "15", "10", "5"]
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect(),
+                    ["SYMBOL_HYPHEN", "120", "-40", "150", "15", "10", "5"].into(),
                 ),
             ],
         }],
@@ -406,7 +394,7 @@ fn camera_coordinates_make_it_version_10() {
 fn a_direction_on_its_own_is_still_version_5() {
     let mut s = sample_with_camera();
     for t in &mut s.tables {
-        t.camera.tracks[0].frames = vec![(0, vec!["T.U.".into()]), (11, vec![xdts::HYPHEN.into()])];
+        t.camera.tracks[0].frames = vec![(0, ["T.U."].into()), (11, [xdts::HYPHEN].into())];
     }
     assert_eq!(x::version(&s), 5);
     let back = x::from_str(&x::to_string(&s, &WriteOptions::default())).unwrap();
@@ -988,4 +976,41 @@ fn a_number_that_cannot_be_a_frame_is_not_one() {
     );
     // And the duration that is not one falls back to the last real frame.
     assert_eq!(t.duration, 6);
+}
+
+/// A line of dialogue or a camera move is written in a colour, as a cell is,
+/// and comes back in it. It used to come back black, which no test saw
+/// because the saved sheet this crate is checked against has no dialogue.
+#[test]
+fn a_coloured_line_keeps_its_colour() {
+    let mut s = sample_with_camera();
+    s.tables[0].dialogue.tracks[0].frames[0].1.font_color = 2;
+    s.tables[0].camera.tracks[0].frames[1].1.font_color = 5;
+
+    let back = tdts::from_str(&tdts::to_string(&s, &WriteOptions::default())).unwrap();
+    let t = &back.tables[0];
+    assert_eq!(
+        t.dialogue.tracks[0].instruction_at(0).unwrap().font_color,
+        2
+    );
+    assert_eq!(t.dialogue.tracks[0].at(0).unwrap(), ["A", "おはよう"]);
+    assert_eq!(t.camera.tracks[0].instruction_at(11).unwrap().font_color, 5);
+    // One with no colour of its own is still the first colour.
+    assert_eq!(t.camera.tracks[0].instruction_at(0).unwrap().font_color, 0);
+    assert_eq!(t.dialogue, s.tables[0].dialogue);
+    assert_eq!(t.camera, s.tables[0].camera);
+
+    // XDTS has no colours: the line survives, the colour does not.
+    let x_back = x::from_str(&x::to_string(&s, &WriteOptions::default())).unwrap();
+    assert_eq!(
+        x_back.tables[0].dialogue.tracks[0].at(0).unwrap(),
+        ["A", "おはよう"]
+    );
+    assert_eq!(
+        x_back.tables[0].dialogue.tracks[0]
+            .instruction_at(0)
+            .unwrap()
+            .font_color,
+        0
+    );
 }

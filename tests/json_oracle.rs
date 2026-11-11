@@ -295,7 +295,7 @@ fn the_fixtures_read_alike() {
 /// one's place on both sides of that switch.
 #[test]
 fn many_keys_and_repeated_ones_agree() {
-    let mut rng = Rng(0x0b1e_c7_0000_0003);
+    let mut rng = Rng(0x000b_1ec7_0000_0003);
     for n in [1, 15, 16, 17, 40, 300] {
         for _ in 0..50 {
             let pairs: Vec<String> = (0..n)

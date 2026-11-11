@@ -254,18 +254,51 @@ impl Track {
 /// value is the string as written, because that is all the format says it is.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ValueTrack {
-    /// The change points, in frame order, each with the whole list of
-    /// values its instruction carries.
-    pub frames: Vec<(usize, Vec<String>)>,
+    /// The change points, in frame order.
+    pub frames: Vec<(usize, Instruction)>,
 }
 
 impl ValueTrack {
     /// The values in effect at `frame`, if any.
     pub fn at(&self, frame: usize) -> Option<&[String]> {
+        self.instruction_at(frame).map(|i| i.values.as_slice())
+    }
+
+    /// The whole instruction in effect at `frame`, colour and all.
+    pub fn instruction_at(&self, frame: usize) -> Option<&Instruction> {
         self.frames
             .iter()
             .rfind(|(f, _)| *f <= frame)
-            .map(|(_, v)| v.as_slice())
+            .map(|(_, i)| i)
+    }
+}
+
+/// One line of dialogue or one camera move: the values it carries, and the
+/// colour it is written in.
+///
+/// `["A", "おはよう"].into()` is a line with no colour of its own, which is
+/// what nearly every one is.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Instruction {
+    /// The values, in the order the specification gives.
+    pub values: Vec<String>,
+    /// The index into [`Sheet::font_colors`] it is written in, as for a
+    /// [`Cell`]. A TDTS key (`fontColorId`); XDTS has no colours.
+    pub font_color: u32,
+}
+
+impl From<Vec<String>> for Instruction {
+    fn from(values: Vec<String>) -> Self {
+        Self {
+            values,
+            font_color: 0,
+        }
+    }
+}
+
+impl<const N: usize> From<[&str; N]> for Instruction {
+    fn from(values: [&str; N]) -> Self {
+        Self::from(values.iter().map(|v| v.to_string()).collect::<Vec<_>>())
     }
 }
 
@@ -293,7 +326,7 @@ impl Field {
         self.tracks
             .iter()
             .flat_map(|t| &t.frames)
-            .any(|(_, v)| v.len() > 1)
+            .any(|(_, i)| i.values.len() > 1)
     }
 }
 
