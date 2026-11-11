@@ -50,11 +50,25 @@
 //!
 //! All three fields are written: 0 (cells), and 3 (dialogue) and 5
 //! (camerawork) where the sheet has them.
+//!
+//! # The p1 extension
+//!
+//! One unofficial extension is carried as well, and it is the one with a
+//! reader: `options` on a cell, holding [`crate::OPTION_KEYFRAME`] or
+//! [`crate::OPTION_REFERENCEFRAME`], with `subversion: "p1"` on the document
+//! to say which extension that is. OpenToonz writes and reads these keys —
+//! they are where it keeps a sheet's circled and triangled numbers — and the
+//! schema they come from is published at
+//! <https://github.com/shun-iwasawa/XDTS-uext>.
+//!
+//! They are not in the official schema, so a sheet that does not use them is
+//! written without either key and remains exactly what a validator expects:
+//! see [`subversion`].
 
 use crate::json::{self, Value};
 use crate::{
-    Error, Field, Sheet, TimeTable, Track, ValueTrack, WriteOptions, FIELD_CAMERA, FIELD_CELL,
-    FIELD_DIALOG,
+    Cell, Error, Field, Sheet, TimeTable, Track, ValueTrack, WriteOptions, FIELD_CAMERA,
+    FIELD_CELL, FIELD_DIALOG,
 };
 
 pub const HEADER: &str = "exchangeDigitalTimeSheet Save Data";
@@ -74,6 +88,36 @@ pub fn version(sheet: &Sheet) -> u32 {
     } else {
         VERSION
     }
+}
+
+/// The `subversion` of the one unofficial extension this crate writes:
+/// *Studio Ponoc extended version 1*.
+///
+/// It adds nothing but [`crate::OPTION_KEYFRAME`] and
+/// [`crate::OPTION_REFERENCEFRAME`] on a cell, as an `options` array beside
+/// that cell's `values`. OpenToonz reads and writes it — the key it keeps a
+/// sheet's circled and triangled numbers in — so this is an extension with a
+/// reader, not a guess.
+///
+/// `subversion` is not in the published schema, and a validator that refuses
+/// unknown keys will refuse a file that has it. That is why it is written
+/// only for a sheet that uses the marks: see [`subversion`].
+pub const SUBVERSION_P1: &str = "p1";
+
+/// `Some(SUBVERSION_P1)` if any cell in this sheet carries an option, and
+/// `None` otherwise.
+///
+/// Like the version, the subversion is a consequence and not a choice. A
+/// sheet with no marks on it is the published format and says nothing about
+/// any extension; the moment one cell is a key, the file has to admit which
+/// extension put it there. This is what OpenToonz does with the same keys.
+pub fn subversion(sheet: &Sheet) -> Option<&'static str> {
+    sheet
+        .tables
+        .iter()
+        .flat_map(|t| &t.tracks)
+        .any(Track::has_options)
+        .then_some(SUBVERSION_P1)
 }
 
 /// A cut or scene number as the schema will take it: empty, or one to four
@@ -97,23 +141,35 @@ fn number_field(text: &str) -> String {
 
 /// One `frames[]` entry. `values` is the whole list the field's instruction
 /// takes: one string for a cell, up to two for dialogue, up to seven for a
-/// camera move in version 10.
-pub(crate) fn frame_entry(frame: usize, values: &[String], extra: Option<(&str, u32)>) -> Value {
+/// camera move in version 10. `options` is the p1 extension's, and is left
+/// out when there is none, which is every sheet the published format can
+/// describe.
+pub(crate) fn frame_entry(
+    frame: usize,
+    values: &[String],
+    options: &[String],
+    extra: Option<(&str, u32)>,
+) -> Value {
     let mut data = Value::obj();
-    // TDTS puts a colour before the instruction type; the key order is the
-    // order the files have.
+    // TDTS puts a colour before the instruction type; the keys are in
+    // alphabetical order, which is the order the files have them in.
     if let Some((key, v)) = extra {
         data = data.with(key, v);
+    }
+    data = data.with("id", 0u32);
+    if !options.is_empty() {
+        data = data.with(
+            "options",
+            Value::Array(options.iter().map(|o| Value::from(o.as_str())).collect()),
+        );
     }
     let values: Vec<Value> = values.iter().map(|v| Value::from(v.as_str())).collect();
     Value::obj()
         .with(
             "data",
-            Value::Array(vec![data
-                .with("id", 0u32)
-                // The schema asks for at least one value, and a frame with
-                // nothing in it has no business being a change point.
-                .with("values", Value::Array(values))]),
+            // The schema asks for at least one value, and a frame with
+            // nothing in it has no business being a change point.
+            Value::Array(vec![data.with("values", Value::Array(values))]),
         )
         .with("frame", frame)
 }
@@ -133,14 +189,22 @@ pub(crate) fn field_tracks<'a>(frames: impl Iterator<Item = Vec<Value>> + 'a) ->
 }
 
 /// The cell field's frame entries, one list per column.
+///
+/// `options` says whether a cell's marks may be written: they are the p1
+/// extension of XDTS, and nothing says the application behind TDTS knows the
+/// key, so that writer leaves them out.
 pub(crate) fn cell_frames<'a>(
     t: &'a TimeTable,
+    options: bool,
     extra: Option<(&'a str, u32)>,
 ) -> impl Iterator<Item = Vec<Value>> + 'a {
     t.tracks.iter().map(move |tr| {
         tr.frames
             .iter()
-            .map(|(f, v)| frame_entry(*f, std::slice::from_ref(v), extra))
+            .map(|(f, c)| {
+                let marks: &[String] = if options { &c.options } else { &[] };
+                frame_entry(*f, std::slice::from_ref(&c.value), marks, extra)
+            })
             .collect()
     })
 }
@@ -153,7 +217,7 @@ pub(crate) fn value_frames<'a>(
     f.tracks.iter().map(move |tr| {
         tr.frames
             .iter()
-            .map(|(fr, v)| frame_entry(*fr, v, extra))
+            .map(|(fr, v)| frame_entry(*fr, v, &[], extra))
             .collect()
     })
 }
@@ -170,7 +234,7 @@ fn time_table(t: &TimeTable, sheet: &Sheet) -> Value {
     // Field 0 is always there; the other two are written only where the sheet
     // has something to put in them, so a cells-only sheet is byte for byte
     // what it was before this crate could carry the rest.
-    let mut fields = vec![field(FIELD_CELL, field_tracks(cell_frames(t, None)))];
+    let mut fields = vec![field(FIELD_CELL, field_tracks(cell_frames(t, true, None)))];
     let mut headers = vec![Value::obj()
         .with("fieldId", FIELD_CELL)
         .with("names", names(&t.columns))];
@@ -210,9 +274,13 @@ pub fn header(sheet: &Sheet) -> Value {
 
 pub fn to_value(sheet: &Sheet) -> Value {
     let tables: Vec<Value> = sheet.tables.iter().map(|t| time_table(t, sheet)).collect();
-    Value::obj()
-        .with("header", header(sheet))
-        .with("timeTables", Value::Array(tables))
+    let mut v = Value::obj().with("header", header(sheet));
+    // Alphabetically between `header` and `timeTables`, which is where a
+    // writer that sorts its keys — OpenToonz's does — puts it.
+    if let Some(sub) = subversion(sheet) {
+        v = v.with("subversion", sub);
+    }
+    v.with("timeTables", Value::Array(tables))
         .with("version", version(sheet))
 }
 
@@ -242,12 +310,17 @@ fn header_names(h: &Value, id: u32) -> Option<Vec<String>> {
     )
 }
 
+/// One decoded column before it is given to a field: `(frame, values,
+/// options)` per change point, since `options` belongs to a cell and the
+/// other two fields have no use for it.
+type Column = Vec<(usize, Vec<String>, Vec<String>)>;
+
 /// One field's columns, in track order, with the highest frame number seen.
 ///
 /// `trackNo` is what orders the columns, not the order the array has them in,
 /// because that is what the column names are indexed by.
-fn tracks_of(tt: &Value, id: u32) -> (Vec<ValueTrack>, usize) {
-    let mut decoded: Vec<(usize, ValueTrack)> = Vec::new();
+fn tracks_of(tt: &Value, id: u32) -> (Vec<Column>, usize) {
+    let mut decoded: Vec<(usize, Column)> = Vec::new();
     let mut max_frame = 0;
     for field in tt.get("fields").and_then(|f| f.as_array()).unwrap_or(&[]) {
         if field.get("fieldId").and_then(|f| f.as_f64()) != Some(id as f64) {
@@ -271,21 +344,25 @@ fn tracks_of(tt: &Value, id: u32) -> (Vec<ValueTrack>, usize) {
                     continue;
                 }
                 let f = f as usize;
-                let values: Vec<String> = fr
+                let data = fr
                     .get("data")
                     .and_then(|d| d.as_array())
-                    .and_then(|d| d.first())
-                    .and_then(|d| d.get("values"))
-                    .and_then(|v| v.as_array())
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(|v| v.to_text())
-                    .collect();
+                    .and_then(|d| d.first());
+                let strings = |key: &str| -> Vec<String> {
+                    data.and_then(|d| d.get(key))
+                        .and_then(|v| v.as_array())
+                        .unwrap_or(&[])
+                        .iter()
+                        .map(|v| v.to_text())
+                        .collect()
+                };
                 max_frame = max_frame.max(f);
-                frames.push((f, values));
+                // `options` is the p1 extension's and is simply absent from a
+                // file that does not use it.
+                frames.push((f, strings("values"), strings("options")));
             }
-            frames.sort_by_key(|(f, _)| *f);
-            decoded.push((no, ValueTrack { frames }));
+            frames.sort_by_key(|(f, ..)| *f);
+            decoded.push((no, frames));
         }
     }
     decoded.sort_by_key(|d| d.0);
@@ -301,48 +378,67 @@ fn field_from_value(tt: &Value, id: u32) -> (Field, usize) {
         .iter()
         .find_map(|h| header_names(h, id))
         .unwrap_or_default();
-    let (tracks, max_frame) = tracks_of(tt, id);
+    let (decoded, max_frame) = tracks_of(tt, id);
+    // Dialogue and camerawork have no marks on them, so the options go no
+    // further here.
+    let tracks = decoded
+        .into_iter()
+        .map(|frames| ValueTrack {
+            frames: frames.into_iter().map(|(f, v, _)| (f, v)).collect(),
+        })
+        .collect();
     (Field { columns, tracks }, max_frame)
+}
+
+/// The cell field, whose change points are single values with the marks on
+/// them.
+fn cells_from_value(tt: &Value) -> (Vec<Track>, usize) {
+    let (decoded, max_frame) = tracks_of(tt, FIELD_CELL);
+    let tracks = decoded
+        .into_iter()
+        .map(|frames| Track {
+            frames: frames
+                .into_iter()
+                .map(|(f, mut values, options)| {
+                    // A cell holds one value; anything past the first is not
+                    // something the format puts in this field.
+                    let value = if values.is_empty() {
+                        String::new()
+                    } else {
+                        values.swap_remove(0)
+                    };
+                    (f, Cell { value, options })
+                })
+                .collect(),
+        })
+        .collect();
+    (tracks, max_frame)
 }
 
 /// Decode one `timeTables[]` entry, all three fields of it.
 ///
-/// Cells become [`Track`]s, since one change point is one string there;
-/// dialogue and camerawork keep the whole list the file gave, which for
-/// camerawork in a version 10 file is the camera position as well as the
-/// direction.
+/// Cells become [`Track`]s of [`Cell`]s, since one change point is one value
+/// there, with the p1 marks on it where a file has them; dialogue and
+/// camerawork keep the whole list the file gave, which for camerawork in a
+/// version 10 file is the camera position as well as the direction.
 pub fn time_table_from_value(tt: &Value) -> TimeTable {
     let duration = tt.get("duration").and_then(|d| d.as_f64()).unwrap_or(0.0) as usize;
-    let (cells, cell_end) = field_from_value(tt, FIELD_CELL);
+    let (tracks, cell_end) = cells_from_value(tt);
+    let columns = tt
+        .get("timeTableHeaders")
+        .and_then(|h| h.as_array())
+        .unwrap_or(&[])
+        .iter()
+        .find_map(|h| header_names(h, FIELD_CELL))
+        .unwrap_or_default();
     let (dialogue, dialogue_end) = field_from_value(tt, FIELD_DIALOG);
     let (camera, camera_end) = field_from_value(tt, FIELD_CAMERA);
     let max_frame = duration.max(cell_end).max(dialogue_end).max(camera_end);
     TimeTable {
         name: tt.get("name").map(|n| n.to_text()).unwrap_or_default(),
         duration: if duration > 0 { duration } else { max_frame },
-        columns: cells.columns,
-        // A cell holds one value; anything past the first is not something
-        // the format puts in this field.
-        tracks: cells
-            .tracks
-            .into_iter()
-            .map(|t| Track {
-                frames: t
-                    .frames
-                    .into_iter()
-                    .map(|(f, mut v)| {
-                        (
-                            f,
-                            if v.is_empty() {
-                                String::new()
-                            } else {
-                                v.swap_remove(0)
-                            },
-                        )
-                    })
-                    .collect(),
-            })
-            .collect(),
+        columns,
+        tracks,
         dialogue,
         camera,
     }

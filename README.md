@@ -48,12 +48,13 @@ let back = xdts::from_str(&std::fs::read_to_string("cut012.tdts")?)?;
 pub struct Sheet      { cut, scene, episode, operator: String, tables: Vec<TimeTable> }
 pub struct TimeTable  { name, duration, columns, tracks,        // セル欄（欄0）
                         dialogue: Field, camera: Field }        // 台詞欄（3）、カメラワーク欄（5）
-pub struct Track      { frames: Vec<(usize, String)> }           // (コマ番号, 値)
+pub struct Track      { frames: Vec<(usize, Cell)> }             // (コマ番号, セル)
+pub struct Cell       { value: String, options: Vec<String> }    // 値＋p1のマーク
 pub struct Field      { columns: Vec<String>, tracks: Vec<ValueTrack> }
 pub struct ValueTrack { frames: Vec<(usize, Vec<String>)> }      // (コマ番号, 値の並び)
 ```
 
-「1コマ1セル」で考えるアプリケーションは、書き出すときにこの形へ変換します。`Track::at(frame)` でそのコマの値を引けます。
+「1コマ1セル」で考えるアプリケーションは、書き出すときにこの形へ変換します。`Track::at(frame)` でそのコマのセル、`Track::value_at(frame)` で値だけを引けます。`Cell` は `"1".into()` で作れるので、マークを使わないかぎり値の文字列を書くだけで済みます。
 
 セル欄は1コマにつき値が1つなので `Track`、台詞欄とカメラワーク欄は値が並ぶので `ValueTrack` です。並びの順序は仕様書の通りで、台詞欄は〈キャラクター名、台詞〉の1〜2個、カメラワーク欄は〈指示、カメラ位置 X、Y、倍率、回転角、カメラ中心 X、Y〉の1〜7個です。足りない分は埋めません。
 
@@ -80,6 +81,27 @@ pub struct ValueTrack { frames: Vec<(usize, Vec<String>)> }      // (コマ番�
 したがって version は選ぶものではなく**結果**で、`xdts::version()` がシートから読み取ります。カメラ位置が入っていれば 10、そうでなければ 5 です。新しい形式を必要としないシートを、古い形式しか読めないリーダーから読めなくしないためです。読み込みは両方を受け付け、知らない version も拒否しません（version 11 のファイルが実在し、中の timeTables は同じ形です）。
 
 欄は3つとも読み書きします。`fieldId` 0（セル）は常に、3（台詞）と 5（カメラワーク）はシートが持っているときに書き出します。
+
+## 非公式拡張 p1
+
+公式仕様ではない拡張を1つだけ扱います。[XDTS-uext](https://github.com/shun-iwasawa/XDTS-uext)（スタジオポノックの拡張版1、作者は OpenToonz 開発者の岩澤俊氏）が追加した、**セルに付くマーク**です。
+
+| 定数 | 意味 |
+|---|---|
+| `OPTION_KEYFRAME` | 原画 — 数字を丸で囲む |
+| `OPTION_REFERENCEFRAME` | 中割参考 — 数字を三角で囲む |
+
+```rust
+use xdts::{Cell, OPTION_KEYFRAME};
+
+let cell = Cell::marked("1", [OPTION_KEYFRAME]);
+```
+
+セルの `data[]` に `options` 配列として入り、ドキュメント直下に `subversion: "p1"` が付きます。**どちらも公開スキーマには無いキーです**。そこで version と同じ扱いにしています——マークが1つも無ければどちらのキーも書かず、出力は公式仕様そのままです。マークが1つでもあれば、ファイルはどの拡張がそれを書いたのかを名乗る必要があります。`xdts::subversion()` がそれを判断します。
+
+これは OpenToonz 本体が読み書きしているキーで（セルマークの保存先です）、推測ではありません。ただし OpenToonz 自身は version 5 しか書かないので、p1 と version 10 は無関係です。
+
+TDTS には書き出しません。TDTS は別の形式で、東映 DTS がこのキーを知っているという根拠が無いためです（読み込み時は落ちます）。
 
 ## 2つの形式の違い
 

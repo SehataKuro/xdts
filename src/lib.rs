@@ -61,6 +61,12 @@
 //! carry the camera position after the direction, where version 5
 //! (2018-11-29) had only the direction. [`xdts::version`] picks the lower
 //! version that can hold a given sheet, and [`xdts::to_string`] writes it.
+//!
+//! One unofficial extension is also carried: p1 adds [`OPTION_KEYFRAME`] and
+//! [`OPTION_REFERENCEFRAME`] to a [`Cell`], which is how a sheet says a
+//! drawing is a key or a reference for the in-betweens. A sheet that uses
+//! neither is written as the published format and says nothing about the
+//! extension; see [`xdts::SUBVERSION_P1`].
 
 #![forbid(unsafe_code)]
 
@@ -81,10 +87,22 @@ pub const HYPHEN: &str = "SYMBOL_HYPHEN";
 
 /// Cell numbers and the symbols above.
 pub const FIELD_CELL: u32 = 0;
-/// Dialogue. Not written by this crate, but read back where present.
+/// Dialogue: a speaker and a line.
 pub const FIELD_DIALOG: u32 = 3;
-/// Camerawork. Not written by this crate, but read back where present.
+/// Camerawork: a direction, and from version 10 a camera position.
 pub const FIELD_CAMERA: u32 = 5;
+
+/// 原画 — this drawing is a key, and its number is circled.
+///
+/// A [`Cell::options`] string, and not part of the published format: see
+/// [`xdts::SUBVERSION_P1`].
+pub const OPTION_KEYFRAME: &str = "OPTION_KEYFRAME";
+/// 中割参考 — this drawing is a reference for the in-betweens, and its number
+/// is enclosed in a triangle.
+///
+/// A [`Cell::options`] string, and not part of the published format: see
+/// [`xdts::SUBVERSION_P1`].
+pub const OPTION_REFERENCEFRAME: &str = "OPTION_REFERENCEFRAME";
 
 #[derive(Debug)]
 pub enum Error {
@@ -102,24 +120,106 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// What is written in one cell: the drawing number or a symbol, and the marks
+/// on it.
+///
+/// `"1".into()` is a plain cell, which is all the published format has. The
+/// options are the unofficial p1 extension — [`OPTION_KEYFRAME`] and
+/// [`OPTION_REFERENCEFRAME`] — and a cell with none of them is written
+/// exactly as it was before this crate could carry them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Cell {
+    pub value: String,
+    pub options: Vec<String>,
+}
+
+impl Cell {
+    /// A cell with marks on it, as in
+    /// `Cell::marked("1", [OPTION_KEYFRAME])`.
+    pub fn marked<I, S>(value: &str, options: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            value: value.to_string(),
+            options: options.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    /// Whether this cell carries `option`.
+    pub fn has(&self, option: &str) -> bool {
+        self.options.iter().any(|o| o == option)
+    }
+}
+
+impl From<&str> for Cell {
+    fn from(value: &str) -> Self {
+        Self {
+            value: value.to_string(),
+            options: Vec::new(),
+        }
+    }
+}
+
+impl From<String> for Cell {
+    fn from(value: String) -> Self {
+        Self {
+            value,
+            options: Vec::new(),
+        }
+    }
+}
+
+/// Compared against a string, a cell is its value: the marks on a drawing do
+/// not change which drawing it is.
+impl PartialEq<str> for Cell {
+    fn eq(&self, other: &str) -> bool {
+        self.value == other
+    }
+}
+
+impl PartialEq<&str> for Cell {
+    fn eq(&self, other: &&str) -> bool {
+        self.value == *other
+    }
+}
+
+impl fmt::Display for Cell {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.value)
+    }
+}
+
 /// One column of one time table, as the changes written in it.
 ///
-/// `frames` is `(frame, value)` with the frame zero-based, in order. A value
+/// `frames` is `(frame, cell)` with the frame zero-based, in order. A value
 /// holds until the next entry; an entry at `frame == duration` closes the
 /// column past the end of the sheet, which is how an exposed drawing is
 /// stopped.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Track {
-    pub frames: Vec<(usize, String)>,
+    pub frames: Vec<(usize, Cell)>,
 }
 
 impl Track {
-    /// The value in effect at `frame`, if any.
-    pub fn at(&self, frame: usize) -> Option<&str> {
+    /// The cell in effect at `frame`, if any.
+    pub fn at(&self, frame: usize) -> Option<&Cell> {
         self.frames
             .iter()
             .rfind(|(f, _)| *f <= frame)
-            .map(|(_, v)| v.as_str())
+            .map(|(_, v)| v)
+    }
+
+    /// The value in effect at `frame`, without its marks.
+    pub fn value_at(&self, frame: usize) -> Option<&str> {
+        self.at(frame).map(|c| c.value.as_str())
+    }
+
+    /// Whether any cell here carries an option, which is what makes a sheet
+    /// need the p1 extension rather than the published format.
+    pub fn has_options(&self) -> bool {
+        self.frames.iter().any(|(_, c)| !c.options.is_empty())
     }
 }
 
@@ -242,11 +342,32 @@ mod tests {
         let t = Track {
             frames: vec![(0, "1".into()), (6, "2".into())],
         };
-        assert_eq!(t.at(0), Some("1"));
-        assert_eq!(t.at(5), Some("1"));
-        assert_eq!(t.at(6), Some("2"));
-        assert_eq!(t.at(99), Some("2"));
-        assert_eq!(Track::default().at(0), None);
+        assert_eq!(t.value_at(0), Some("1"));
+        assert_eq!(t.value_at(5), Some("1"));
+        assert_eq!(t.value_at(6), Some("2"));
+        assert_eq!(t.value_at(99), Some("2"));
+        assert_eq!(Track::default().value_at(0), None);
+    }
+
+    /// The marks on a drawing do not change which drawing it is, so a cell
+    /// compares equal to its value and the options ride along beside it.
+    #[test]
+    fn a_marked_cell_is_still_its_value() {
+        let t = Track {
+            frames: vec![(0, Cell::marked("1", [OPTION_KEYFRAME])), (6, "2".into())],
+        };
+        assert_eq!(t.value_at(0), Some("1"));
+        assert!(t.at(0).unwrap().has(OPTION_KEYFRAME));
+        assert_eq!(t.at(0).unwrap(), "1");
+        assert!(t.has_options());
+
+        // And a plain cell carries none, which is every sheet the published
+        // format can describe.
+        assert!(t.at(6).unwrap().options.is_empty());
+        assert!(!Track {
+            frames: vec![(0, "1".into())]
+        }
+        .has_options());
     }
 
     /// A column that starts late holds nothing before its first change.
@@ -255,8 +376,8 @@ mod tests {
         let t = Track {
             frames: vec![(4, "1".into())],
         };
-        assert_eq!(t.at(3), None);
-        assert_eq!(t.at(4), Some("1"));
+        assert_eq!(t.value_at(3), None);
+        assert_eq!(t.value_at(4), Some("1"));
     }
 
     #[test]

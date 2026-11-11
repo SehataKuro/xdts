@@ -35,6 +35,11 @@
 //! field 0 where both have data; the sheet in `tests/data/` has its cells in
 //! field 0 and nothing in field 4, which is what this crate writes.
 //!
+//! The p1 extension's `options` and `subversion` are XDTS's, and nothing says
+//! the application behind TDTS knows those keys, so a cell's marks are left
+//! out here rather than written into a file that may be refused for having
+//! them.
+//!
 //! Fields 1, 2 and 4 and the work slip are written as the empty structure the
 //! application saves: this crate has nothing to put in them, and a file
 //! without them is not the format.
@@ -132,7 +137,7 @@ const FONT_COLOR: Option<(&str, u32)> = Some(("fontColorId", 0));
 fn time_table(t: &TimeTable, sheet: &Sheet, index: usize) -> Value {
     let mut fields = vec![Value::obj().with("fieldId", FIELD_CELL).with(
         "tracks",
-        xdts::field_tracks(xdts::cell_frames(t, FONT_COLOR)),
+        xdts::field_tracks(xdts::cell_frames(t, false, FONT_COLOR)),
     )];
     for (id, f) in [(FIELD_DIALOG, &t.dialogue), (FIELD_CAMERA, &t.camera)] {
         if f.is_empty() {

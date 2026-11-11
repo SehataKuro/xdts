@@ -7,7 +7,10 @@
 //! from the vdts-editor project (MIT; see NOTICE), and the tests below demand
 //! that what this crate writes has the same keys.
 
-use xdts::{json, tdts, xdts as x, Field, Sheet, TimeTable, Track, ValueTrack, WriteOptions};
+use xdts::{
+    json, tdts, xdts as x, Cell, Field, Sheet, TimeTable, Track, ValueTrack, WriteOptions,
+    OPTION_KEYFRAME, OPTION_REFERENCEFRAME,
+};
 
 fn sample() -> Sheet {
     Sheet {
@@ -379,4 +382,109 @@ fn rewriting_a_saved_sheet_gives_the_same_bytes() {
             "{name} ({head}) is not written back as it was saved"
         );
     }
+}
+
+/// The same sheet with the p1 marks on two of its drawings.
+fn sample_with_marks() -> Sheet {
+    let mut s = sample();
+    let frames = &mut s.tables[0].tracks[0].frames;
+    frames[0].1 = Cell::marked("1", [OPTION_KEYFRAME]);
+    frames[2].1 = Cell::marked("3", [OPTION_REFERENCEFRAME]);
+    s
+}
+
+/// A sheet with no marks says nothing about any extension, and is the
+/// published format exactly. This is the half that matters: using the
+/// extension must cost nothing to everyone who does not.
+#[test]
+fn a_sheet_without_marks_says_nothing_about_p1() {
+    let text = x::to_string(&sample(), &WriteOptions::default());
+    assert!(!text.contains("subversion"), "an unused extension got out");
+    assert!(!text.contains("options"), "an unused extension got out");
+    assert_eq!(x::subversion(&sample()), None);
+}
+
+/// One marked drawing and the file has to admit which extension put it
+/// there, because `options` is not a key the published schema has.
+#[test]
+fn a_marked_drawing_makes_it_p1() {
+    let s = sample_with_marks();
+    assert_eq!(x::subversion(&s), Some("p1"));
+    let text = x::to_string(&s, &WriteOptions::default());
+    assert!(text.contains("\"subversion\": \"p1\""), "no subversion");
+    // Every array element is on its own line, as the applications write
+    // them, so the key and its value are looked for apart.
+    assert!(text.contains("\"options\": ["), "no options");
+    assert!(text.contains(OPTION_KEYFRAME), "no keyframe mark");
+    // The version is still the published one: p1 and version 10 are
+    // unrelated, and a marked sheet with no camera needs nothing from 2022.
+    assert!(text.contains("\"version\": 5"), "not version 5");
+
+    let back = x::from_str(&text).unwrap();
+    assert_eq!(back.tables[0].tracks, s.tables[0].tracks);
+    assert!(back.tables[0].tracks[0].at(0).unwrap().has(OPTION_KEYFRAME));
+    assert!(back.tables[0].tracks[0]
+        .at(4)
+        .unwrap()
+        .has(OPTION_REFERENCEFRAME));
+    // And the cell is still the cell it was.
+    assert_eq!(back.tables[0].tracks[0].value_at(4), Some("3"));
+}
+
+/// `options` goes beside `values` in the one `data[]` entry the cell has, in
+/// alphabetical order, which is where OpenToonz's writer puts it.
+#[test]
+fn options_sit_where_a_reader_looks_for_them() {
+    let text = x::to_string(&sample_with_marks(), &WriteOptions::default());
+    let body = text.split_once('\n').unwrap().1;
+    let v = json::parse(body).unwrap();
+    let data = v.get("timeTables").unwrap().as_array().unwrap()[0]
+        .get("fields")
+        .unwrap()
+        .as_array()
+        .unwrap()[0]
+        .get("tracks")
+        .unwrap()
+        .as_array()
+        .unwrap()[0]
+        .get("frames")
+        .unwrap()
+        .as_array()
+        .unwrap()[0]
+        .get("data")
+        .unwrap()
+        .as_array()
+        .unwrap()[0]
+        .clone();
+    assert_eq!(data.get("id").unwrap().as_f64(), Some(0.0));
+    assert_eq!(
+        data.get("options").unwrap().as_array().unwrap()[0].to_text(),
+        OPTION_KEYFRAME
+    );
+    assert_eq!(
+        data.get("values").unwrap().as_array().unwrap()[0].to_text(),
+        "1"
+    );
+    // Alphabetical, as the key order of a sheet saved beside one is.
+    let keys = json::parse(&data.to_compact()).unwrap();
+    let text = keys.to_compact();
+    assert!(
+        text.find("\"id\"") < text.find("\"options\"")
+            && text.find("\"options\"") < text.find("\"values\""),
+        "keys are out of order: {text}"
+    );
+}
+
+/// TDTS is not XDTS, and nothing says the application behind it knows the
+/// key. The marks are dropped rather than written into a file that may be
+/// refused for having them.
+#[test]
+fn tdts_does_not_carry_the_marks() {
+    let text = tdts::to_string(&sample_with_marks(), &WriteOptions::default());
+    assert!(!text.contains("options"), "p1 got into a TDTS file");
+    assert!(!text.contains("subversion"), "p1 got into a TDTS file");
+    let back = tdts::from_str(&text).unwrap();
+    // The cells survive; only the marks on them are gone.
+    assert_eq!(back.tables[0].tracks[0].value_at(0), Some("1"));
+    assert!(!back.tables[0].tracks[0].has_options());
 }
