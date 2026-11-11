@@ -612,3 +612,30 @@ fn every_time_sheet_in_a_file_is_read() {
     assert_eq!(back.tables.len(), 2, "a sheet in the file was skipped");
     assert_eq!(back.operator, "nobody");
 }
+
+/// A cut number that is not four digits is still that cut number. Writing
+/// `112` for `C-112`, or nothing at all for a five digit number, loses what
+/// someone wrote on the sheet to satisfy a pattern that a JSON Schema
+/// `pattern` does not even enforce — it is a search, so `C-112` matches it.
+#[test]
+fn a_cut_number_is_not_rewritten() {
+    for raw in ["C-112", "12345", "no.3", "カット"] {
+        let s = Sheet {
+            cut: raw.into(),
+            scene: raw.into(),
+            tables: sample().tables,
+            ..Sheet::default()
+        };
+        let o = WriteOptions::default();
+        assert_eq!(x::from_str(&x::to_string(&s, &o)).unwrap().cut, raw);
+        assert_eq!(tdts::from_str(&tdts::to_string(&s, &o)).unwrap().cut, raw);
+        // The two writers used to disagree about the same value: TDTS passed
+        // it through while XDTS reduced it.
+        assert_eq!(
+            x::from_str(&x::to_string(&s, &o)).unwrap().scene,
+            tdts::from_str(&tdts::to_string(&s, &o)).unwrap().scene
+        );
+    }
+    // And the reduction is still available to whoever wants it.
+    assert_eq!(x::header_number("C-112"), "112");
+}

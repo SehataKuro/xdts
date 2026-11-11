@@ -22,9 +22,10 @@
 //! The published schema requires `timeTables` and `version` and makes
 //! `header` optional. Inside, `duration` has a minimum of 1, `fieldId` must
 //! be 0, 3 or 5, `data[].id` must be 0, and `values` needs at least one
-//! element. `header.cut` and `header.scene` are `\d{1,4}`, which is stricter
-//! than files in the wild — this crate writes what conforms and leaves the
-//! rest out, rather than producing a file a validator rejects.
+//! element. This crate writes all of that. `header.cut` and `header.scene`
+//! are `\d{1,4}`, which files in the wild do not keep to — the sheet in
+//! `tests/data/` has `"scene": ""` — and those two go out as the caller has
+//! them: see [`header`].
 //!
 //! # Versions
 //!
@@ -120,15 +121,15 @@ pub fn subversion(sheet: &Sheet) -> Option<&'static str> {
         .then_some(SUBVERSION_P1)
 }
 
-/// A cut or scene number as the schema will take it: empty, or one to four
-/// digits.
+/// A cut or scene number reduced to what an anchored reading of the schema
+/// would take: one to four digits, or nothing.
 ///
-/// Both fields are `\d{1,4}`, and a number read off paper or typed by hand is
-/// often not (`C-112`, `no.3`). Keeping the digits is the useful half of such
-/// a value; one that leaves no digits, or far too many to be a cut number, is
-/// written as the empty string that files with an unknown field carry.
-fn number_field(text: &str) -> String {
-    if text.is_empty() || (text.len() <= 4 && text.bytes().all(|b| b.is_ascii_digit())) {
+/// This crate does **not** use it — [`header`] writes what the caller has —
+/// and it is here for a caller who would rather hand a reader `112` than
+/// `C-112`. See [`header`] for why that is the caller's decision and not
+/// this crate's.
+pub fn header_number(text: &str) -> String {
+    if text.len() <= 4 && text.bytes().all(|b| b.is_ascii_digit()) {
         return text.to_string();
     }
     let digits: String = text.chars().filter(char::is_ascii_digit).collect();
@@ -266,10 +267,30 @@ fn time_table(t: &TimeTable, sheet: &Sheet) -> Value {
     v.with("timeTableHeaders", Value::Array(headers))
 }
 
+/// The cut and scene numbers, written as the caller has them.
+///
+/// The schema says both are `\d{1,4}`, and this crate used to reduce anything
+/// else to its digits — `C-112` to `112` — or to the empty string. That was
+/// wrong twice over.
+///
+/// A JSON Schema `pattern` is a search and not an anchored match, so
+/// `C-112` and `12345` both satisfy `\d{1,4}` as written: the reduction threw
+/// away values that were already valid. And for the one kind of value that
+/// genuinely cannot conform, a number with no digits in it at all, the empty
+/// string does not conform either — `""` does not match `\d{1,4}` — so the
+/// reduction bought nothing there and lost the number as well. The sheet this
+/// crate is checked against has `"scene": ""`, which is to say the
+/// application writes a value its own pattern refuses.
+///
+/// What is left is a choice between handing a stricter-than-specified reader
+/// something it may refuse, and silently changing a cut number. A refusal is
+/// visible and can be fixed; a quietly rewritten number is the kind of thing
+/// this crate exists because of. So the value goes out as it came in, and
+/// [`header_number`] is there for a caller who wants the other behaviour.
 pub fn header(sheet: &Sheet) -> Value {
     Value::obj()
-        .with("cut", number_field(&sheet.cut))
-        .with("scene", number_field(&sheet.scene))
+        .with("cut", sheet.cut.as_str())
+        .with("scene", sheet.scene.as_str())
 }
 
 pub fn to_value(sheet: &Sheet) -> Value {
@@ -496,10 +517,27 @@ pub fn from_str(text: &str) -> Result<Sheet, Error> {
 mod tests {
     use super::*;
 
-    /// `cut` and `scene` are `\d{1,4}` in the published schema, and what an
-    /// application has in hand often is not.
+    /// A cut number goes out as it came in. `C-112` is what someone wrote on
+    /// the sheet, and it is not this crate's to shorten.
     #[test]
-    fn the_header_numbers_are_what_the_schema_will_take() {
+    fn the_header_numbers_are_the_callers_own() {
+        for raw in ["", "12", "0001", "C-112", "no.3", "12345", "カット"] {
+            let h = header(&Sheet {
+                cut: raw.into(),
+                scene: raw.into(),
+                ..Sheet::default()
+            });
+            assert_eq!(h.get("cut").unwrap().to_text(), raw, "{raw:?}");
+            assert_eq!(h.get("scene").unwrap().to_text(), raw, "{raw:?}");
+        }
+    }
+
+    /// The reduction a caller can ask for instead. `""` is in here as the
+    /// reason the writer no longer does this by itself: it does not match
+    /// `\d{1,4}` any more than `カット` does, so turning one into the other
+    /// buys no conformance and loses the number.
+    #[test]
+    fn header_number_reduces_what_it_can_and_empties_the_rest() {
         for (raw, want) in [
             ("", ""),
             ("12", "12"),
@@ -509,7 +547,7 @@ mod tests {
             ("12345", ""),
             ("カット", ""),
         ] {
-            assert_eq!(number_field(raw), want, "{raw:?}");
+            assert_eq!(header_number(raw), want, "{raw:?}");
         }
     }
 
