@@ -54,3 +54,18 @@ tests/data/synthetic.tnz
   column, level and xsheet savers in toonz/sources/toonzlib). The scene is
   invented: no level, path or timing in it comes from any production scene
   or from OpenToonz's sample scenes, which are CC BY-NC 4.0 and are not here.
+
+---
+
+tests/data/ditis_new.ditis, tests/data/ditis_imported.ditis
+
+  Written by DiTiS's own code: buildDitisJson, normalizeSheetForSave and
+  importExchangeTimesheet from DiTiS's js/fileOperations.js and
+  js/parsers.js, run under Node. ditis_new.ditis is a sheet as DiTiS's
+  createNewSheet makes one, with invented cells; ditis_imported.ditis is
+  tests/data/csp_v5.xdts imported by DiTiS, and so holds that file's invented
+  contents and nothing else.
+
+  DiTiS: Copyright (c) 2026 MisakiAkatsuki
+  https://github.com/MisakiAkatsuki/ditis
+  Licensed under the MIT License.
